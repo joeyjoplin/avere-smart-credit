@@ -3,6 +3,7 @@ import { Calendar, TrendingUp, AlertCircle } from "lucide-react";
 import MobileLayout from "@/components/layout/MobileLayout";
 import SummaryCard from "@/components/cards/SummaryCard";
 import StatRow from "@/components/cards/StatRow";
+import ScoreCard from "@/components/cards/ScoreCard";
 import { Button } from "@/components/ui/button";
 import { useNavigate } from "react-router-dom";
 
@@ -18,6 +19,8 @@ const loanData = {
   installmentsPaid: 3,
   totalInstallments: 12,
 };
+
+const userScore = 720;
 
 const formatCurrency = (value: number) => {
   return new Intl.NumberFormat("en-US", {
@@ -43,6 +46,11 @@ const Dashboard = () => {
           <p className="text-sm text-muted-foreground">Welcome back</p>
           <h1 className="text-2xl font-bold text-foreground">Your Loan Overview</h1>
         </motion.div>
+
+        {/* Credit Score Card */}
+        <div className="mb-4">
+          <ScoreCard score={userScore} delay={0.05} />
+        </div>
 
         {/* Main Summary Card */}
         <SummaryCard title="Loan Summary" variant="primary" delay={0.1}>

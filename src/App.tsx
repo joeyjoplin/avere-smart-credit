@@ -7,6 +7,7 @@ import Index from "./pages/Index";
 import HomeScreen from "./pages/HomeScreen";
 import Dashboard from "./pages/Dashboard";
 import LoanFlow from "./pages/LoanFlow";
+import Earn from "./pages/Earn";
 import NotFound from "./pages/NotFound";
 
 const queryClient = new QueryClient();
@@ -22,6 +23,7 @@ const App = () => (
           <Route path="/home" element={<HomeScreen />} />
           <Route path="/dashboard" element={<Dashboard />} />
           <Route path="/loan" element={<LoanFlow />} />
+          <Route path="/earn" element={<Earn />} />
           {/* ADD ALL CUSTOM ROUTES ABOVE THE CATCH-ALL "*" ROUTE */}
           <Route path="*" element={<NotFound />} />
         </Routes>
