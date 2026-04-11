@@ -1,0 +1,25 @@
+{
+  "identity": {
+    "name": "Maria",
+    "story": "DoorDash driver, 2 years on platform, no FICO score"
+  },
+  "plaid": {
+    "avg_monthly_inflow_usd": 3200,
+    "avg_monthly_outflow_usd": 2100,
+    "negative_balance_days_per_month": 1,
+    "recurring_payments": ["rent", "utilities", "phone"]
+  },
+  "argyle": {
+    "platform": "DoorDash",
+    "tenure_months": 24,
+    "avg_monthly_gross_usd": 2800,
+    "income_std_dev_usd": 220,
+    "active_platforms": 1
+  },
+  "onchain": {
+    "wallet_age_days": 420,
+    "avg_balance_usdc": 480,
+    "tx_per_month": 14
+  },
+  "payment_history": []
+}

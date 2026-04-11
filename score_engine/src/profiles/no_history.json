@@ -1,0 +1,25 @@
+{
+  "identity": {
+    "name": "No History",
+    "story": "Brand-new wallet, no bank or payroll data linked, no on-chain activity"
+  },
+  "plaid": {
+    "avg_monthly_inflow_usd": 0,
+    "avg_monthly_outflow_usd": 0,
+    "negative_balance_days_per_month": 0,
+    "recurring_payments": []
+  },
+  "argyle": {
+    "platform": null,
+    "tenure_months": 0,
+    "avg_monthly_gross_usd": 0,
+    "income_std_dev_usd": 0,
+    "active_platforms": 0
+  },
+  "onchain": {
+    "wallet_age_days": 10,
+    "avg_balance_usdc": 0,
+    "tx_per_month": 1
+  },
+  "payment_history": []
+}

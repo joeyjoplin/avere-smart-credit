@@ -1,0 +1,25 @@
+{
+  "identity": {
+    "name": "James",
+    "story": "Immigrant gig worker, Instacart + Uber Eats, 18 months in the US"
+  },
+  "plaid": {
+    "avg_monthly_inflow_usd": 2400,
+    "avg_monthly_outflow_usd": 1800,
+    "negative_balance_days_per_month": 2,
+    "recurring_payments": ["rent", "utilities", "phone", "insurance"]
+  },
+  "argyle": {
+    "platform": "Instacart",
+    "tenure_months": 18,
+    "avg_monthly_gross_usd": 2100,
+    "income_std_dev_usd": 300,
+    "active_platforms": 2
+  },
+  "onchain": {
+    "wallet_age_days": 320,
+    "avg_balance_usdc": 320,
+    "tx_per_month": 11
+  },
+  "payment_history": []
+}
