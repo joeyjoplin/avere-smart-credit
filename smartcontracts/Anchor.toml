@@ -1,4 +1,5 @@
 [toolchain]
+solana_version = "2.1.12"
 package_manager = "yarn"
 
 [features]
@@ -6,10 +7,7 @@ resolution = true
 skip-lint = false
 
 [programs.localnet]
-smartcontracts = "Biuv6W1PvDxt19XaieH9o478fG4L6PFRfQabNuUfgoVG"
-
-[registry]
-url = "https://api.apr.dev"
+smartcontracts = "8AUqDmrhdj55j6a2QcwYnm2j8oxUYgefZAH5sShqbx2H"
 
 [provider]
 cluster = "localnet"
@@ -17,3 +15,5 @@ wallet = "~/.config/solana/id.json"
 
 [scripts]
 test = "yarn run ts-mocha -p ./tsconfig.json -t 1000000 tests/**/*.ts"
+
+[hooks]
