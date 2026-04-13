@@ -17,7 +17,6 @@ import { Program, BN } from "@coral-xyz/anchor";
 import { Smartcontracts } from "../target/types/smartcontracts";
 import {
   PublicKey,
-  SystemProgram,
   LAMPORTS_PER_SOL,
   Keypair,
 } from "@solana/web3.js";
@@ -140,15 +139,20 @@ describe("avere", () => {
 
     [bankPoolPDA] = deriveBankPoolPDA(program.programId);
 
-    // Initialize BankPool PDA (program-wide, done once)
-    await program.methods
-      .initializeBankPool()
-      .accounts({
-        authority:     provider.wallet.publicKey,
-        systemProgram: SystemProgram.programId,
-        // bankPool is auto-resolved from [SEED_BANK_POOL]
-      })
-      .rpc();
+    // Initialize BankPool PDA (program-wide, done once).
+    // If the validator already has the account from a prior run, skip silently.
+    try {
+      await program.methods
+        .initializeBankPool()
+        .accounts({
+          authority: provider.wallet.publicKey,
+          // bankPool and systemProgram are auto-resolved
+        })
+        .rpc();
+    } catch (e: any) {
+      // 0x0 = SystemProgram "account already in use" — BankPool already exists
+      if (!e?.message?.includes("already in use") && !e?.message?.includes("0x0")) throw e;
+    }
 
     // Create BankPool USDC ATA (authority = bankPoolPDA — off-curve)
     bankPoolUsdcAta = await createPdaAta(conn, mintAuthority, usdcMint, bankPoolPDA);
@@ -168,9 +172,8 @@ describe("avere", () => {
     await program.methods
       .initializeVault()
       .accounts({
-        owner:         user.publicKey,
-        systemProgram: SystemProgram.programId,
-        // vault is auto-resolved from [SEED_VAULT, owner]
+        owner: user.publicKey,
+        // vault and systemProgram are auto-resolved
       })
       .signers([user])
       .rpc();
@@ -179,7 +182,8 @@ describe("avere", () => {
   async function setScore(score: number): Promise<void> {
     await program.methods
       .updateScore(score)
-      .accounts({ owner: user.publicKey })
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      .accounts({ owner: user.publicKey } as any)
       .signers([user])
       .rpc();
   }
@@ -258,7 +262,7 @@ describe("avere", () => {
 
       await program.methods
         .initializeVault()
-        .accounts({ owner: user2.publicKey, systemProgram: SystemProgram.programId })
+        .accounts({ owner: user2.publicKey })
         .signers([user2])
         .rpc();
 
@@ -275,7 +279,7 @@ describe("avere", () => {
       try {
         await program.methods
           .initializeVault()
-          .accounts({ owner: attacker.publicKey, systemProgram: SystemProgram.programId })
+          .accounts({ owner: attacker.publicKey })
           .signers([attacker])
           .rpc();
         // attacker gets their own vault — verify it's different from user's
@@ -302,7 +306,7 @@ describe("avere", () => {
 
       await program.methods
         .depositUsdc(amount)
-        .accounts({ owner: user.publicKey, usdcMint, userUsdcAta, vaultUsdcAta, tokenProgram: TOKEN_PROGRAM_ID })
+        .accounts({ owner: user.publicKey, usdcMint, userUsdcAta, vaultUsdcAta, tokenProgram: TOKEN_PROGRAM_ID } as any)
         .signers([user])
         .rpc();
 
@@ -318,7 +322,7 @@ describe("avere", () => {
       for (const amt of [a, b]) {
         await program.methods
           .depositUsdc(amt)
-          .accounts({ owner: user.publicKey, usdcMint, userUsdcAta, vaultUsdcAta, tokenProgram: TOKEN_PROGRAM_ID })
+          .accounts({ owner: user.publicKey, usdcMint, userUsdcAta, vaultUsdcAta, tokenProgram: TOKEN_PROGRAM_ID } as any)
           .signers([user])
           .rpc();
       }
@@ -334,7 +338,7 @@ describe("avere", () => {
 
       await program.methods
         .depositUsdc(amount)
-        .accounts({ owner: user.publicKey, usdcMint, userUsdcAta, vaultUsdcAta, tokenProgram: TOKEN_PROGRAM_ID })
+        .accounts({ owner: user.publicKey, usdcMint, userUsdcAta, vaultUsdcAta, tokenProgram: TOKEN_PROGRAM_ID } as any)
         .signers([user])
         .rpc();
 
@@ -351,7 +355,7 @@ describe("avere", () => {
       try {
         await program.methods
           .depositUsdc(new BN(0))
-          .accounts({ owner: user.publicKey, usdcMint, userUsdcAta, vaultUsdcAta, tokenProgram: TOKEN_PROGRAM_ID })
+          .accounts({ owner: user.publicKey, usdcMint, userUsdcAta, vaultUsdcAta, tokenProgram: TOKEN_PROGRAM_ID } as any)
           .signers([user])
           .rpc();
         assert.fail("expected rejection for zero deposit");
@@ -374,13 +378,27 @@ describe("avere", () => {
             userUsdcAta,
             vaultUsdcAta,
             tokenProgram: TOKEN_PROGRAM_ID,
-          })
+          } as any)
           .signers([attacker])
           .rpc();
         assert.fail("expected Unauthorized");
       } catch (err: any) {
         assert.ok(err);
       }
+    });
+
+    it("usdc_free equals usdc_deposited when no collateral is locked", async () => {
+      const { userUsdcAta, vaultUsdcAta } = await setupUsdcAccounts(5_000_000_000);
+      const deposit = new BN(2_000_000_000);
+      await program.methods
+        .depositUsdc(deposit)
+        .accounts({ owner: user.publicKey, usdcMint, userUsdcAta, vaultUsdcAta, tokenProgram: TOKEN_PROGRAM_ID } as any)
+        .signers([user])
+        .rpc();
+
+      const vault = await program.account.userVault.fetch(vaultPDA);
+      const free = new BN(vault.usdcDeposited).sub(new BN(vault.usdcLocked));
+      assert.ok(free.eq(deposit), "usdc_free must equal deposited amount when usdcLocked is 0");
     });
   });
 
@@ -398,7 +416,7 @@ describe("avere", () => {
 
       await program.methods
         .depositSol(amount)
-        .accounts({ owner: user.publicKey, systemProgram: SystemProgram.programId })
+        .accounts({ owner: user.publicKey } as any)
         .signers([user])
         .rpc();
 
@@ -412,7 +430,7 @@ describe("avere", () => {
 
       await program.methods
         .depositSol(amount)
-        .accounts({ owner: user.publicKey, systemProgram: SystemProgram.programId })
+        .accounts({ owner: user.publicKey } as any)
         .signers([user])
         .rpc();
 
@@ -427,7 +445,7 @@ describe("avere", () => {
       for (const amt of [a, b]) {
         await program.methods
           .depositSol(amt)
-          .accounts({ owner: user.publicKey, systemProgram: SystemProgram.programId })
+          .accounts({ owner: user.publicKey } as any)
           .signers([user])
           .rpc();
       }
@@ -440,7 +458,7 @@ describe("avere", () => {
       try {
         await program.methods
           .depositSol(new BN(0))
-          .accounts({ owner: user.publicKey, systemProgram: SystemProgram.programId })
+          .accounts({ owner: user.publicKey } as any)
           .signers([user])
           .rpc();
         assert.fail("expected rejection for zero SOL deposit");
@@ -452,7 +470,7 @@ describe("avere", () => {
     it("tracks SOL as raw lamports — msol_shares stays zero", async () => {
       await program.methods
         .depositSol(new BN(LAMPORTS_PER_SOL))
-        .accounts({ owner: user.publicKey, systemProgram: SystemProgram.programId })
+        .accounts({ owner: user.publicKey } as any)
         .signers([user])
         .rpc();
 
@@ -510,7 +528,9 @@ describe("avere", () => {
     });
 
     it("updates last_score_update on every call", async () => {
-      const before = Math.floor(Date.now() / 1000) - 5;
+      // Use on-chain block time — test validator clock may differ from wall clock
+      const slot = await conn.getSlot();
+      const before = (await conn.getBlockTime(slot))! - 5;
       await setScore(600);
       const vault = await program.account.userVault.fetch(vaultPDA);
       assert.isAbove(new BN(vault.lastScoreUpdate).toNumber(), before);
@@ -553,7 +573,7 @@ describe("avere", () => {
       try {
         await program.methods
           .updateScore(999)
-          .accounts({ owner: attacker.publicKey })
+          .accounts({ owner: attacker.publicKey } as any)
           .signers([attacker])
           .rpc();
         assert.fail("expected Unauthorized");
@@ -603,11 +623,10 @@ describe("avere", () => {
           opts.installments ?? makeInstallments(3, 180_000_000)
         )
         .accounts({
-          owner:         user.publicKey,
-          loan:          targetPDA,
-          systemProgram: SystemProgram.programId,
-          // vault is auto-resolved
-        })
+          owner: user.publicKey,
+          loan:  targetPDA,
+          // vault and systemProgram are auto-resolved
+        } as any)
         .signers([user])
         .rpc();
     }
@@ -663,7 +682,7 @@ describe("avere", () => {
       const { userUsdcAta, vaultUsdcAta } = await setupUsdcAccounts(10_000_000_000);
       await program.methods
         .depositUsdc(new BN(1_000_000_000))
-        .accounts({ owner: user.publicKey, usdcMint, userUsdcAta, vaultUsdcAta, tokenProgram: TOKEN_PROGRAM_ID })
+        .accounts({ owner: user.publicKey, usdcMint, userUsdcAta, vaultUsdcAta, tokenProgram: TOKEN_PROGRAM_ID } as any)
         .signers([user])
         .rpc();
 
@@ -754,6 +773,15 @@ describe("avere", () => {
         );
       }
     });
+
+    it("assigns sequential loan_id values (0, 1, 2) across multiple approvals", async () => {
+      for (let i = 0; i < 3; i++) {
+        const [lpda] = deriveLoanTradPDA(vaultPDA, i, program.programId);
+        await approveLoan({ loanId: i });
+        const loan = await program.account.loanAccountTraditional.fetch(lpda);
+        assert.equal(loan.loanId, i, `loan ${i} must have loanId = ${i}`);
+      }
+    });
   });
 
   // ═══════════════════════════════════════════════════════════════════════════
@@ -777,7 +805,7 @@ describe("avere", () => {
           new BN(500_000_000), 975, new BN(0), 0, 100, 975, 975,
           makeInstallments(3, 180_000_000)
         )
-        .accounts({ owner: user.publicKey, loan: loanPDA, systemProgram: SystemProgram.programId })
+        .accounts({ owner: user.publicKey, loan: loanPDA } as any)
         .signers([user])
         .rpc();
     });
@@ -786,14 +814,14 @@ describe("avere", () => {
       await program.methods
         .disburseTraditional()
         .accounts({
-          owner:           user.publicKey,
-          loan:            loanPDA,
+          owner:        user.publicKey,
+          loan:         loanPDA,
           usdcMint,
           bankPoolUsdcAta,
           userUsdcAta,
-          tokenProgram:    TOKEN_PROGRAM_ID,
+          tokenProgram: TOKEN_PROGRAM_ID,
           // vault and bankPool are auto-resolved
-        })
+        } as any)
         .signers([user])
         .rpc();
     }
@@ -843,6 +871,40 @@ describe("avere", () => {
         );
       }
     });
+
+    it("decreases BankPool USDC balance by principal on disburse", async () => {
+      await fundBankPool();
+      const poolBefore = (await getAccount(conn, bankPoolUsdcAta)).amount;
+
+      await disburse();
+
+      const poolAfter = (await getAccount(conn, bankPoolUsdcAta)).amount;
+      assert.equal(poolBefore - poolAfter, BigInt(500_000_000), "pool must decrease by principal");
+    });
+
+    it("rejects disbursement from a non-owner signer (Unauthorized)", async () => {
+      await fundBankPool();
+      const attacker = Keypair.generate();
+      await airdrop(conn, attacker.publicKey);
+
+      try {
+        await program.methods
+          .disburseTraditional()
+          .accounts({
+            owner:        attacker.publicKey,
+            loan:         loanPDA,
+            usdcMint,
+            bankPoolUsdcAta,
+            userUsdcAta,
+            tokenProgram: TOKEN_PROGRAM_ID,
+          } as any)
+          .signers([attacker])
+          .rpc();
+        assert.fail("expected Unauthorized");
+      } catch (err: any) {
+        assert.ok(err);
+      }
+    });
   });
 
   // ═══════════════════════════════════════════════════════════════════════════
@@ -866,7 +928,7 @@ describe("avere", () => {
           new BN(350_000_000), 975, new BN(0), 0, 100, 975, 975,
           makeInstallments(2, 185_000_000)
         )
-        .accounts({ owner: user.publicKey, loan: loanPDA, systemProgram: SystemProgram.programId })
+        .accounts({ owner: user.publicKey, loan: loanPDA } as any)
         .signers([user])
         .rpc();
 
@@ -874,7 +936,7 @@ describe("avere", () => {
 
       await program.methods
         .disburseTraditional()
-        .accounts({ owner: user.publicKey, loan: loanPDA, usdcMint, bankPoolUsdcAta, userUsdcAta, tokenProgram: TOKEN_PROGRAM_ID })
+        .accounts({ owner: user.publicKey, loan: loanPDA, usdcMint, bankPoolUsdcAta, userUsdcAta, tokenProgram: TOKEN_PROGRAM_ID } as any)
         .signers([user])
         .rpc();
     });
@@ -883,14 +945,14 @@ describe("avere", () => {
       await program.methods
         .repayInstallment(index)
         .accounts({
-          owner:           user.publicKey,
-          loan:            loanPDA,
+          owner:        user.publicKey,
+          loan:         loanPDA,
           usdcMint,
           userUsdcAta,
           bankPoolUsdcAta,
-          tokenProgram:    TOKEN_PROGRAM_ID,
+          tokenProgram: TOKEN_PROGRAM_ID,
           // vault is auto-resolved
-        })
+        } as any)
         .signers([user])
         .rpc();
     }
@@ -902,7 +964,9 @@ describe("avere", () => {
     });
 
     it("writes paid_ts on repayment — never zero after payment (rule 8)", async () => {
-      const before = Math.floor(Date.now() / 1000) - 5;
+      // Use on-chain block time — test validator clock may differ from wall clock
+      const slot = await conn.getSlot();
+      const before = (await conn.getBlockTime(slot))! - 5;
       await repay(0);
       const loan = await program.account.loanAccountTraditional.fetch(loanPDA);
       assert.isAbove(new BN(loan.installments[0].paidTs).toNumber(), before);
@@ -964,6 +1028,37 @@ describe("avere", () => {
         );
       }
     });
+
+    it("allows repaying a later installment before an earlier one (no ordering constraint)", async () => {
+      await repay(1); // pay index 1 first
+      const loan = await program.account.loanAccountTraditional.fetch(loanPDA);
+      assert.isTrue(loan.installments[1].paid,  "installment 1 should be marked paid");
+      assert.isFalse(loan.installments[0].paid, "installment 0 should still be unpaid");
+      assert.equal(loan.paidCount, 1);
+    });
+
+    it("rejects repayment from a non-owner signer (Unauthorized)", async () => {
+      const attacker = Keypair.generate();
+      await airdrop(conn, attacker.publicKey);
+
+      try {
+        await program.methods
+          .repayInstallment(0)
+          .accounts({
+            owner:        attacker.publicKey,
+            loan:         loanPDA,
+            usdcMint,
+            userUsdcAta,
+            bankPoolUsdcAta,
+            tokenProgram: TOKEN_PROGRAM_ID,
+          } as any)
+          .signers([attacker])
+          .rpc();
+        assert.fail("expected Unauthorized");
+      } catch (err: any) {
+        assert.ok(err);
+      }
+    });
   });
 
   // ═══════════════════════════════════════════════════════════════════════════
@@ -1021,7 +1116,7 @@ describe("avere", () => {
             new BN(100_000_000), 975, new BN(0), 0, 100, 975, 975,
             makeInstallments(1, 110_000_000)
           )
-          .accounts({ owner: user.publicKey, loan: lpda, systemProgram: SystemProgram.programId })
+          .accounts({ owner: user.publicKey, loan: lpda } as any)
           .signers([user])
           .rpc();
       }
@@ -1036,7 +1131,7 @@ describe("avere", () => {
             new BN(100_000_000), 975, new BN(0), 0, 100, 975, 975,
             makeInstallments(1, 110_000_000)
           )
-          .accounts({ owner: user.publicKey, loan: loan4, systemProgram: SystemProgram.programId })
+          .accounts({ owner: user.publicKey, loan: loan4 } as any)
           .signers([user])
           .rpc();
         assert.fail("expected MaxLoansReached");
@@ -1060,18 +1155,18 @@ describe("avere", () => {
           new BN(200_000_000), 975, new BN(0), 0, 100, 975, 975,
           makeInstallments(1, 210_000_000)
         )
-        .accounts({ owner: user.publicKey, loan: loanPDA, systemProgram: SystemProgram.programId })
+        .accounts({ owner: user.publicKey, loan: loanPDA } as any)
         .signers([user])
         .rpc();
 
       await fundBankPool(10_000_000_000);
 
       await program.methods.disburseTraditional()
-        .accounts({ owner: user.publicKey, loan: loanPDA, usdcMint, bankPoolUsdcAta, userUsdcAta, tokenProgram: TOKEN_PROGRAM_ID })
+        .accounts({ owner: user.publicKey, loan: loanPDA, usdcMint, bankPoolUsdcAta, userUsdcAta, tokenProgram: TOKEN_PROGRAM_ID } as any)
         .signers([user]).rpc();
 
       await program.methods.repayInstallment(0)
-        .accounts({ owner: user.publicKey, loan: loanPDA, usdcMint, userUsdcAta, bankPoolUsdcAta, tokenProgram: TOKEN_PROGRAM_ID })
+        .accounts({ owner: user.publicKey, loan: loanPDA, usdcMint, userUsdcAta, bankPoolUsdcAta, tokenProgram: TOKEN_PROGRAM_ID } as any)
         .signers([user]).rpc();
 
       const loan = await program.account.loanAccountTraditional.fetch(loanPDA);
