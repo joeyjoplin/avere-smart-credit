@@ -2,7 +2,9 @@
   "license": "ISC",
   "scripts": {
     "lint:fix": "prettier */*.js \"*/**/*{.js,.ts}\" -w",
-    "lint": "prettier */*.js \"*/**/*{.js,.ts}\" --check"
+    "lint": "prettier */*.js \"*/**/*{.js,.ts}\" --check",
+    "setup:devnet": "ts-node --transpile-only scripts/setup_devnet.ts",
+    "create:usdc": "ts-node --transpile-only scripts/create_test_usdc.ts"
   },
   "dependencies": {
     "@coral-xyz/anchor": "^0.31.1",

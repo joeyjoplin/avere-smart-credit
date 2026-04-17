@@ -17,6 +17,10 @@ pub fn handler(
     require!(principal >= MIN_LOAN_USDC,              AvereError::LoanBelowMinimum);
     require!(!installments.is_empty(),                AvereError::NoInstallments);
     require!(installments.len() <= MAX_INSTALLMENTS as usize, AvereError::TooManyInstallments);
+    require!(
+        hybrid_defi_pct.saturating_add(hybrid_trad_pct) == 100,
+        AvereError::InvalidHybridSplit
+    );
 
     {
         let vault = &ctx.accounts.vault;

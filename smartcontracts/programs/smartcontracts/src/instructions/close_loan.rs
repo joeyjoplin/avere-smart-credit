@@ -26,7 +26,7 @@ pub struct CloseLoan<'info> {
     #[account(
         mut,
         close  = owner,
-        seeds  = [SEED_LOAN_TRAD, vault.key().as_ref(), &[loan.loan_id]],
+        seeds  = [SEED_LOAN_TRAD, loan.vault.as_ref(), &[loan.loan_id]],
         bump   = loan.bump,
         has_one = vault,
     )]

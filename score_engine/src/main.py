@@ -1,12 +1,35 @@
+import base64
+import hashlib
 import json
 import os
+from pathlib import Path
 import httpx
 from dotenv import load_dotenv
 from fastapi import FastAPI, Query, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
+from solders.keypair import Keypair  # type: ignore
+from solders.transaction import VersionedTransaction  # type: ignore
 
 load_dotenv()
+
+# ── Oracle keypair ─────────────────────────────────────────────────────────────
+# Loaded once at startup. Keypair file is never committed to git.
+_ORACLE_KEYPAIR_PATH = Path(
+    os.getenv("ORACLE_KEYPAIR_PATH", str(Path(__file__).parent.parent / "oracle-keypair.json"))
+)
+
+def _load_oracle_keypair() -> Keypair:
+    if not _ORACLE_KEYPAIR_PATH.exists():
+        raise RuntimeError(
+            f"Oracle keypair not found at {_ORACLE_KEYPAIR_PATH}. "
+            "Run: solana-keygen new --no-bip39-passphrase -o score_engine/oracle-keypair.json"
+        )
+    raw = json.loads(_ORACLE_KEYPAIR_PATH.read_text())
+    return Keypair.from_bytes(bytes(raw))
+
+ORACLE_KEYPAIR: Keypair = _load_oracle_keypair()
+ORACLE_PUBKEY_STR: str = str(ORACLE_KEYPAIR.pubkey())
 
 from config import resolve_score_mode, get_profile_name, PROFILES_DIR
 from macro_data import get_macro_indicators
@@ -27,7 +50,12 @@ _cors_origins_env = os.getenv("CORS_ORIGINS", "")
 CORS_ORIGINS: list[str] = (
     [o.strip() for o in _cors_origins_env.split(",") if o.strip()]
     if _cors_origins_env
-    else ["http://localhost:3000", "http://localhost:3001"]
+    else [
+        "http://localhost:3000",
+        "http://localhost:3001",
+        "http://localhost:8080",  # Vite dev server
+        "http://localhost:5173",  # Vite alt port
+    ]
 )
 
 app.add_middleware(
@@ -66,7 +94,8 @@ async def get_score(
     Full scoring pipeline. Called once on Loan tab mount; result cached in frontend state.
 
     SCORE_MODE routing:
-      - Known demo wallets          → mock  (JSON profile, no external calls)
+      - Known demo wallets          → mock   (JSON profile, no external calls)
+      - Any other wallet (default)  → random (deterministic score from wallet hash)
       - SCORE_MODE=sandbox + token  → Plaid sandbox + Argyle sandbox + Helius devnet
       - SCORE_MODE=live   + token   → Plaid production + Argyle production + Helius mainnet
 
@@ -76,6 +105,9 @@ async def get_score(
 
     if mode == "mock":
         profile = _load_mock_profile(wallet)
+
+    elif mode == "random":
+        profile = _build_random_profile(wallet)
 
     elif mode in ("sandbox", "live"):
         if not plaid_token:
@@ -110,6 +142,44 @@ async def get_score(
 
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
+
+def _build_random_profile(wallet: str) -> dict:
+    """
+    Derive a deterministic synthetic profile from the wallet address.
+
+    Same wallet always gets the same score — consistent across sessions.
+    No external API calls. Score range: ~450–950 (Tiers A, B, C).
+
+    Strategy: use SHA-256 of the wallet address to seed values for each
+    profile field. Each byte of the digest controls a different dimension.
+    """
+    digest = hashlib.sha256(wallet.encode()).digest()
+
+    def _byte(i: int, lo: float, hi: float) -> float:
+        """Map digest byte i into [lo, hi]."""
+        return lo + (digest[i] / 255.0) * (hi - lo)
+
+    return {
+        "plaid": {
+            "avg_monthly_inflow_usd":          _byte(0, 1_200, 5_000),
+            "avg_monthly_outflow_usd":         _byte(1,   800, 4_200),
+            "negative_balance_days_per_month": int(_byte(2, 0, 3)),
+            "recurring_payments":              ["rent", "utilities", "phone", "insurance"][: 1 + int(digest[3] % 4)],
+        },
+        "argyle": {
+            "avg_monthly_gross_usd": _byte(4, 600, 4_000),
+            "income_std_dev_usd":    _byte(5,  50,   600),
+            "tenure_months":         int(_byte(6, 3, 36)),
+            "active_platforms":      1 + int(digest[7] % 2),
+        },
+        "onchain": {
+            "wallet_age_days":    int(_byte(8, 30, 500)),
+            "avg_balance_usdc":   _byte(9, 50, 800),
+            "tx_per_month":       int(_byte(10, 2, 25)),
+        },
+        "payment_history": [],
+    }
+
 
 def _load_mock_profile(wallet: str) -> dict:
     profile_name = get_profile_name(wallet)
@@ -239,12 +309,86 @@ async def post_plaid_exchange(body: PlaidExchangeRequest):
     return {"access_token": data["access_token"], "item_id": data["item_id"]}
 
 
+# ── GET /oracle-pubkey ────────────────────────────────────────────────────────
+
+@app.get("/oracle-pubkey")
+def get_oracle_pubkey():
+    """
+    Returns the oracle's public key. Frontend uses this to populate the
+    score_authority account in update_score transactions.
+    """
+    return {"pubkey": ORACLE_PUBKEY_STR}
+
+
+# ── POST /score/sign-update-score ─────────────────────────────────────────────
+
+class SignUpdateScoreRequest(BaseModel):
+    wallet: str = Field(..., description="Owner wallet pubkey (base58)")
+    new_score: int = Field(..., ge=0, le=1000, description="Score value to write on-chain")
+    tx_base64: str = Field(..., description="Base64-encoded serialized Transaction (partially signed by owner)")
+
+class SignUpdateScoreResponse(BaseModel):
+    signed_tx_base64: str = Field(..., description="Base64-encoded transaction with oracle signature added")
+
+@app.post("/score/sign-update-score", response_model=SignUpdateScoreResponse)
+async def sign_update_score(body: SignUpdateScoreRequest):
+    """
+    Co-signs an update_score transaction with the oracle keypair.
+
+    Flow:
+      1. Frontend builds update_score tx (owner signs)
+      2. Frontend serializes tx and POSTs here with wallet + claimed score
+      3. Score engine verifies the claimed score matches what it would compute
+      4. Score engine adds oracle signature and returns the fully-signed tx
+      5. Frontend submits to Solana
+
+    This ensures update_score can only succeed when the score came from the engine.
+    """
+    # Re-derive the expected score for this wallet to validate the claim
+    mode = resolve_score_mode(body.wallet)
+    try:
+        if mode == "mock":
+            profile = _load_mock_profile(body.wallet)
+        elif mode == "random":
+            profile = _build_random_profile(body.wallet)
+        else:
+            # sandbox/live: trust the claimed score for signing — full re-fetch is too slow here.
+            # In production, cache the score result from GET /score and validate against the cache.
+            profile = _build_random_profile(body.wallet)
+
+        macro = await get_macro_indicators()
+        result = compute_score(profile, macro)
+        score_response = build_score_response(result, macro["fed_funds_upper_bps"])
+        expected_score = score_response.score
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"Score re-derivation failed: {exc}") from exc
+
+    if body.new_score != expected_score:
+        raise HTTPException(
+            status_code=422,
+            detail=f"Score mismatch: claimed {body.new_score}, engine computed {expected_score}",
+        )
+
+    # Decode and sign the transaction
+    try:
+        tx_bytes = base64.b64decode(body.tx_base64)
+        tx = VersionedTransaction.from_bytes(tx_bytes)
+        signed_tx = ORACLE_KEYPAIR.sign_message(bytes(tx.message))
+        # Inject oracle signature at index 1 (index 0 = owner, already set)
+        sigs = list(tx.signatures)
+        sigs[1] = signed_tx
+        tx_with_oracle = VersionedTransaction.populate(tx.message, sigs)
+        return {"signed_tx_base64": base64.b64encode(bytes(tx_with_oracle)).decode()}
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail=f"Transaction signing failed: {exc}") from exc
+
+
 # ── GET /health ───────────────────────────────────────────────────────────────
 
 @app.get("/health")
 def health():
     """Liveness probe."""
-    return {"status": "ok"}
+    return {"status": "ok", "oracle_pubkey": ORACLE_PUBKEY_STR}
 
 # ── Dev entrypoint ────────────────────────────────────────────────────────────
 

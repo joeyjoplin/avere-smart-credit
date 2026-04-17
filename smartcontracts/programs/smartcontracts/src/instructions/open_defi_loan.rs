@@ -4,8 +4,7 @@ use crate::{constants::*, errors::AvereError, state::*};
 /// Locks SOL collateral, reads Pyth price, and disburses USDC.
 /// Phase 4 — requires Pyth oracle CPI (devnet only).
 pub fn handler(_ctx: Context<OpenDefiLoan>, _sol_collateral: u64, _usdc_borrow: u64) -> Result<()> {
-    // Pyth CPI + Kamino disburse implemented in Phase 4
-    Ok(())
+    err!(AvereError::NotImplemented)
 }
 
 #[derive(Accounts)]

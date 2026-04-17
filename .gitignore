@@ -40,3 +40,12 @@ __pycache__/
 *.lock
 
 
+oracle-keypair.json
+.superstack
+scripts/DEMO_SCRIPT.md
+scripts/create_demo_wallets.py
+scripts/keypairs/james-keypair.json
+scripts/keypairs/maria-keypair.json
+smartcontracts/scripts/create_test_usdc.ts
+smartcontracts/scripts/setup_devnet.ts
+smartcontracts/scripts/test-usdc-mint.json

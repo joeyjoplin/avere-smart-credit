@@ -7,7 +7,7 @@ pub const SEED_BANK_POOL: &[u8] = b"bank-pool";
 // Business rules
 pub const MAX_ACTIVE_LOANS:    u8  = 3;
 pub const MAX_INSTALLMENTS:    u8  = 12;
-pub const MIN_LOAN_USDC:       u64 = 50_000_000;   // $50 USDC (6 decimals)
+pub const MIN_LOAN_USDC:       u64 = 1_000_000;    // $1 USDC — faucet-viable devnet amounts
 pub const LTV_BPS:             u16 = 7_000;         // 70% max borrow vs collateral
 pub const LIQ_THRESHOLD_BPS:  u16 = 8_000;         // liquidate if LTV exceeds 80%
 
@@ -41,3 +41,15 @@ pub const COLLATERAL_THRESHOLD_HALF:     u8  = 50;
 // External program addresses (devnet)
 pub const PYTH_SOL_USD_FEED: &str = "J83w4HKfqxwcq3BEMMkPFSppX3gqekLyLJBexebFVkix";
 pub const USDC_MINT_DEVNET:  &str = "4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU";
+
+// Typed pubkey constants — used in account address constraints
+use anchor_lang::prelude::Pubkey;
+
+/// Standard Circle devnet USDC mint. All token instructions validate against this.
+pub const USDC_MINT_PUBKEY: Pubkey =
+    Pubkey::from_str_const("4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU");
+
+/// Score engine oracle keypair. update_score requires this account as a Signer.
+/// Keypair lives in score_engine/oracle-keypair.json (never committed).
+pub const SCORE_ORACLE_PUBKEY: Pubkey =
+    Pubkey::from_str_const("HRcsEto5uezCKCPeesYN5mq2wa1MUjvQFnJwKUhAYi7A");

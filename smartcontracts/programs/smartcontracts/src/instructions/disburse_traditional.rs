@@ -42,6 +42,9 @@ pub fn handler(ctx: Context<DisburseTraditional>) -> Result<()> {
     // Mark disbursement time — prevents double disburse
     ctx.accounts.loan.disbursed_at = Clock::get()?.unix_timestamp;
 
+    // Sync usdc_available from ATA truth (counter starts at 0 but ATA is funded externally)
+    ctx.accounts.bank_pool.usdc_available = ctx.accounts.bank_pool_usdc_ata.amount;
+
     Ok(())
 }
 
@@ -72,11 +75,16 @@ pub struct DisburseTraditional<'info> {
     )]
     pub bank_pool: Account<'info, BankPool>,
 
-    /// USDC mint — required for transfer_checked
+    /// USDC mint — validated against the known Circle devnet USDC address
+    #[account(address = USDC_MINT_PUBKEY @ AvereError::InvalidMint)]
     pub usdc_mint: InterfaceAccount<'info, Mint>,
 
-    /// BankPool's USDC ATA (source of funds)
-    #[account(mut)]
+    /// BankPool's USDC ATA (source of funds) — authority + mint constrained to prevent substitution
+    #[account(
+        mut,
+        token::mint      = usdc_mint,
+        token::authority = bank_pool,
+    )]
     pub bank_pool_usdc_ata: InterfaceAccount<'info, TokenAccount>,
 
     /// User's USDC ATA (destination)

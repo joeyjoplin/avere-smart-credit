@@ -5,7 +5,7 @@ use crate::{constants::*, errors::AvereError, state::*};
 /// Phase 4 — requires Kamino CPI accounts (devnet only).
 /// The account struct is defined but the CPI call is wired in Phase 4.
 pub fn handler(_ctx: Context<RebalanceYield>) -> Result<()> {
-    // CPI to Kamino implemented in Phase 4
+    msg!("rebalance_yield: devnet stub — no Kamino CPI");
     Ok(())
 }
 

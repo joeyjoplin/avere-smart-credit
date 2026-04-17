@@ -15,7 +15,7 @@ pub enum AvereError {
     // Traditional loan
     #[msg("Score tier D is not eligible for traditional credit")]
     TierNotEligible,
-    #[msg("Loan amount below minimum ($50 USDC)")]
+    #[msg("Loan amount below minimum ($1 USDC)")]
     LoanBelowMinimum,
     #[msg("Loan amount exceeds approved limit")]
     LoanExceedsLimit,
@@ -49,4 +49,10 @@ pub enum AvereError {
     Overflow,
     #[msg("Deposit amount must be greater than zero")]
     ZeroDeposit,
+    #[msg("Invalid USDC mint — expected Circle devnet USDC")]
+    InvalidMint,
+    #[msg("hybrid_defi_pct + hybrid_trad_pct must equal 100")]
+    InvalidHybridSplit,
+    #[msg("Instruction not yet implemented (Phase 4)")]
+    NotImplemented,
 }

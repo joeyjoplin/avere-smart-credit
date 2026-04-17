@@ -20,6 +20,14 @@ pub struct UpdateScore<'info> {
     #[account(mut)]
     pub owner: Signer<'info>,
 
+    /// Score engine oracle — must be signed by the program's oracle keypair.
+    /// Constraint disabled in localnet builds so tests can use any signer.
+    #[cfg_attr(
+        not(feature = "localnet"),
+        account(constraint = score_authority.key() == SCORE_ORACLE_PUBKEY @ AvereError::Unauthorized)
+    )]
+    pub score_authority: Signer<'info>,
+
     #[account(
         mut,
         seeds  = [SEED_VAULT, owner.key().as_ref()],

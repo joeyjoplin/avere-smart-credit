@@ -43,7 +43,13 @@ pub fn handler(ctx: Context<RepayInstallment>, installment_index: u8) -> Result<
     // Close loan if all installments are paid
     if loan.paid_count == loan.n_installments {
         loan.status = LoanStatus::Paid;
+        // Release the loan slot so the user can take a new one
+        ctx.accounts.vault.active_loans =
+            ctx.accounts.vault.active_loans.saturating_sub(1);
     }
+
+    // Sync usdc_available from ATA truth (mirrors disburse_traditional sync approach)
+    ctx.accounts.bank_pool.usdc_available = ctx.accounts.bank_pool_usdc_ata.amount;
 
     Ok(())
 }
@@ -55,6 +61,7 @@ pub struct RepayInstallment<'info> {
     pub owner: Signer<'info>,
 
     #[account(
+        mut,
         seeds  = [SEED_VAULT, owner.key().as_ref()],
         bump   = vault.bump,
         has_one = owner @ AvereError::Unauthorized,
@@ -69,15 +76,27 @@ pub struct RepayInstallment<'info> {
     )]
     pub loan: Account<'info, LoanAccountTraditional>,
 
-    /// USDC mint — required for transfer_checked
+    #[account(
+        mut,
+        seeds = [SEED_BANK_POOL],
+        bump  = bank_pool.bump,
+    )]
+    pub bank_pool: Account<'info, BankPool>,
+
+    /// USDC mint — validated against the known Circle devnet USDC address
+    #[account(address = USDC_MINT_PUBKEY @ AvereError::InvalidMint)]
     pub usdc_mint: InterfaceAccount<'info, Mint>,
 
     /// User's USDC ATA (source of repayment)
     #[account(mut)]
     pub user_usdc_ata: InterfaceAccount<'info, TokenAccount>,
 
-    /// BankPool USDC ATA (destination)
-    #[account(mut)]
+    /// BankPool USDC ATA (destination) — authority + mint constrained to prevent redirection
+    #[account(
+        mut,
+        token::mint      = usdc_mint,
+        token::authority = bank_pool,
+    )]
     pub bank_pool_usdc_ata: InterfaceAccount<'info, TokenAccount>,
 
     pub token_program: Interface<'info, TokenInterface>,

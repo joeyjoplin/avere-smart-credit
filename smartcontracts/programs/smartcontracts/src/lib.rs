@@ -8,7 +8,7 @@ pub mod state;
 use instructions::*;
 use state::InstallmentInput;
 
-declare_id!("8AUqDmrhdj55j6a2QcwYnm2j8oxUYgefZAH5sShqbx2H");
+declare_id!("FCfqU7hKCSZGkmPiVqZqhjq2v585uwPM4VvieqgnJm2j");
 
 #[program]
 pub mod smartcontracts {

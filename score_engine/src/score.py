@@ -51,13 +51,13 @@ TIER_SPREADS_BPS: dict[str, int | None] = {
 }
 
 MAX_LOAN_BY_TIER: dict[str, int] = {
-    "A": 5_000_000_000,  # $5,000 USDC (6 decimals)
-    "B": 2_500_000_000,  # $2,500 USDC
-    "C": 1_000_000_000,  # $1,000 USDC
-    "D": 0,
+    "A": 10_000_000,  # $10 USDC — devnet faucet-viable amounts
+    "B":  7_000_000,  # $7  USDC
+    "C":  5_000_000,  # $5  USDC
+    "D":  0,
 }
 
-MIN_LOAN_USDC = 50_000_000  # $50 USDC (mirrors constants.rs)
+MIN_LOAN_USDC = 1_000_000  # $1 USDC (mirrors constants.rs)
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
 

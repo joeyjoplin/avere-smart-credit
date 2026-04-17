@@ -4,7 +4,7 @@ use crate::{constants::*, errors::AvereError, state::*};
 /// Checks Pyth price vs liquidation threshold and executes liquidation.
 /// Phase 4 — requires Pyth oracle CPI (devnet only).
 pub fn handler(_ctx: Context<Liquidate>) -> Result<()> {
-    Ok(())
+    err!(AvereError::NotImplemented)
 }
 
 #[derive(Accounts)]

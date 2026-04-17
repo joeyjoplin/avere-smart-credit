@@ -38,7 +38,8 @@ pub struct DepositUsdc<'info> {
     )]
     pub vault: Account<'info, UserVault>,
 
-    /// USDC mint — required for transfer_checked
+    /// USDC mint — validated against the known Circle devnet USDC address
+    #[account(address = USDC_MINT_PUBKEY @ AvereError::InvalidMint)]
     pub usdc_mint: InterfaceAccount<'info, Mint>,
 
     /// User's USDC token account (source)
@@ -46,7 +47,11 @@ pub struct DepositUsdc<'info> {
     pub user_usdc_ata: InterfaceAccount<'info, TokenAccount>,
 
     /// Vault's USDC token account (destination — authority is vault PDA)
-    #[account(mut)]
+    #[account(
+        mut,
+        token::mint      = usdc_mint,
+        token::authority = vault,
+    )]
     pub vault_usdc_ata: InterfaceAccount<'info, TokenAccount>,
 
     pub token_program: Interface<'info, TokenInterface>,

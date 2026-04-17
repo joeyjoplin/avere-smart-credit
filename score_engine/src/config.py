@@ -3,10 +3,12 @@ config.py — SCORE_MODE routing and demo wallet → profile mapping.
 
 SCORE_MODE (env var):
   mock    → load JSON profile from profiles/  (always used for known demo wallets)
+  random  → deterministic score from wallet address hash (default — no external APIs)
   sandbox → fetch from Plaid sandbox + Argyle sandbox APIs
   live    → fetch from Plaid production + Argyle production APIs
 
 Demo wallets are always routed to mock regardless of SCORE_MODE.
+Any unknown wallet defaults to 'random' mode so anyone can connect and get a score.
 """
 
 import os
@@ -36,11 +38,11 @@ def resolve_score_mode(wallet: str) -> str:
     Return the data-fetch mode for a given wallet address.
 
     - Known demo wallets → 'mock' (JSON profile, always)
-    - All other wallets  → SCORE_MODE env var ('sandbox' | 'live')
+    - All other wallets  → SCORE_MODE env var (default: 'random')
     """
     if wallet in DEMO_PROFILES:
         return "mock"
-    return os.getenv("SCORE_MODE", "sandbox")
+    return os.getenv("SCORE_MODE", "random")
 
 
 def get_profile_name(wallet: str) -> str | None:

@@ -4,7 +4,7 @@ use crate::{constants::*, errors::AvereError, state::*};
 /// Redeems kUSDC from Kamino and returns tokens to the user.
 /// Phase 4 — requires Kamino CPI (devnet only).
 pub fn handler(_ctx: Context<Withdraw>, _amount: u64) -> Result<()> {
-    Ok(())
+    err!(AvereError::NotImplemented)
 }
 
 #[derive(Accounts)]

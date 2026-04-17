@@ -23,13 +23,14 @@ import {
 import {
   TOKEN_PROGRAM_ID,
   ASSOCIATED_TOKEN_PROGRAM_ID,
-  createMint,
   createAssociatedTokenAccount,
-  getAssociatedTokenAddressSync,
+  createAssociatedTokenAccountIdempotent,
   mintTo,
   getAccount,
 } from "@solana/spl-token";
 import { assert } from "chai";
+import * as fs from "fs";
+import * as path from "path";
 
 // ─── Seed constants — must match constants.rs exactly ───────────────────────
 const SEED_VAULT     = Buffer.from("vault");
@@ -37,7 +38,7 @@ const SEED_LOAN_TRAD = Buffer.from("loan-t");
 const SEED_BANK_POOL = Buffer.from("bank-pool");
 
 // ─── Business-rule constants — must match constants.rs ───────────────────────
-const MIN_LOAN_USDC    = new BN(50_000_000);
+const MIN_LOAN_USDC    = new BN(1_000_000);
 const MAX_INSTALLMENTS = 12;
 const SCORE_MAX        = 1000;
 
@@ -76,22 +77,24 @@ async function airdrop(
   await connection.confirmTransaction(sig, "confirmed");
 }
 
-/** Create an ATA for an off-curve owner (PDA). */
+/** Create an ATA for an off-curve owner (PDA).
+ *  Uses the idempotent variant — newer ATA program versions reject the
+ *  non-idempotent Create instruction when the owner is off-curve. */
 async function createPdaAta(
   connection: anchor.web3.Connection,
   payer: Keypair,
   mint: PublicKey,
   owner: PublicKey
 ): Promise<PublicKey> {
-  return createAssociatedTokenAccount(
+  return createAssociatedTokenAccountIdempotent(
     connection,
     payer,
     mint,
     owner,
-    undefined,                    // confirmOptions — use default
+    undefined,           // confirmOptions
     TOKEN_PROGRAM_ID,
     ASSOCIATED_TOKEN_PROGRAM_ID,
-    true                          // allowOwnerOffCurve — owner is a PDA
+    true                 // allowOwnerOffCurve
   );
 }
 
@@ -115,6 +118,7 @@ describe("avere", () => {
   // Shared — created once in `before`
   let usdcMint:        PublicKey;
   let mintAuthority:   Keypair;
+  let oracleKeypair:   Keypair;
   let bankPoolPDA:     PublicKey;
   let bankPoolUsdcAta: PublicKey;
 
@@ -125,17 +129,30 @@ describe("avere", () => {
   // ─── Global setup ────────────────────────────────────────────────────────
 
   before(async () => {
-    mintAuthority = Keypair.generate();
+    // Load the deterministic test mint authority whose pubkey is baked into the
+    // usdc-mint-account.json fixture (pre-seeded by [[test.validator.account]]).
+    mintAuthority = Keypair.fromSecretKey(
+      new Uint8Array(
+        JSON.parse(fs.readFileSync(
+          path.join(__dirname, "fixtures/test-mint-authority.json"), "utf8"
+        ))
+      )
+    );
     await airdrop(conn, mintAuthority.publicKey);
 
-    // Local USDC mint — 6 decimals (same as devnet USDC)
-    usdcMint = await createMint(
-      conn,
-      mintAuthority,
-      mintAuthority.publicKey,
-      null,
-      6
+    // Load oracle keypair — required signer for update_score.
+    // File is gitignored; generate with: node score_engine/scripts/gen_oracle_keypair.js
+    oracleKeypair = Keypair.fromSecretKey(
+      new Uint8Array(
+        JSON.parse(fs.readFileSync(
+          path.join(__dirname, "../../score_engine/oracle-keypair.json"), "utf8"
+        ))
+      )
     );
+
+    // USDC mint is pre-seeded at the canonical devnet address by the test validator fixture.
+    // The fixture sets mintAuthority as the mint authority so we can call mintTo in tests.
+    usdcMint = new PublicKey("4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU");
 
     [bankPoolPDA] = deriveBankPoolPDA(program.programId);
 
@@ -182,9 +199,11 @@ describe("avere", () => {
   async function setScore(score: number): Promise<void> {
     await program.methods
       .updateScore(score)
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      .accounts({ owner: user.publicKey } as any)
-      .signers([user])
+      .accounts({
+        owner:          user.publicKey,
+        scoreAuthority: oracleKeypair.publicKey,
+      } as any)
+      .signers([user, oracleKeypair])
       .rpc();
   }
 
@@ -573,12 +592,38 @@ describe("avere", () => {
       try {
         await program.methods
           .updateScore(999)
-          .accounts({ owner: attacker.publicKey } as any)
-          .signers([attacker])
+          .accounts({
+            owner:          attacker.publicKey,
+            scoreAuthority: oracleKeypair.publicKey,
+          } as any)
+          .signers([attacker, oracleKeypair])
           .rpc();
         assert.fail("expected Unauthorized");
       } catch (err: any) {
         assert.ok(err);
+      }
+    });
+
+    it("rejects update signed by an unauthorized oracle (non-oracle scoreAuthority)", async () => {
+      const fakeOracle = Keypair.generate();
+      await airdrop(conn, fakeOracle.publicKey);
+
+      try {
+        await program.methods
+          .updateScore(750)
+          .accounts({
+            owner:          user.publicKey,
+            scoreAuthority: fakeOracle.publicKey,
+          } as any)
+          .signers([user, fakeOracle])
+          .rpc();
+        assert.fail("expected Unauthorized — only the oracle keypair may co-sign");
+      } catch (err: any) {
+        assert.ok(
+          err.error?.errorCode?.code === "Unauthorized" ||
+          err.message?.includes("Unauthorized"),
+          "must reject score update without oracle co-signature"
+        );
       }
     });
   });
@@ -701,7 +746,20 @@ describe("avere", () => {
 
     // ── Error paths ──────────────────────────────────────────────────────────
 
-    it("rejects loan below $50 minimum (LoanBelowMinimum)", async () => {
+    it("rejects hybrid split not summing to 100 (InvalidHybridSplit)", async () => {
+      try {
+        await approveLoan({ defiPct: 60, tradPct: 30 }); // 60 + 30 = 90 ≠ 100
+        assert.fail("expected InvalidHybridSplit");
+      } catch (err: any) {
+        assert.ok(
+          err.error?.errorCode?.code === "InvalidHybridSplit" ||
+          err.message?.includes("InvalidHybridSplit"),
+          "must reject when hybrid percentages do not sum to 100"
+        );
+      }
+    });
+
+    it("rejects loan below $1 minimum (LoanBelowMinimum)", async () => {
       try {
         await approveLoan({ principal: new BN(10_000_000) });
         assert.fail("expected LoanBelowMinimum");
@@ -945,12 +1003,13 @@ describe("avere", () => {
       await program.methods
         .repayInstallment(index)
         .accounts({
-          owner:        user.publicKey,
-          loan:         loanPDA,
+          owner:          user.publicKey,
+          loan:           loanPDA,
+          bankPool:       bankPoolPDA,
           usdcMint,
           userUsdcAta,
           bankPoolUsdcAta,
-          tokenProgram: TOKEN_PROGRAM_ID,
+          tokenProgram:   TOKEN_PROGRAM_ID,
           // vault is auto-resolved
         } as any)
         .signers([user])
@@ -1004,6 +1063,29 @@ describe("avere", () => {
       assert.deepEqual(loan.status, { paid: {} });
     });
 
+    it("decrements vault.active_loans to 0 when the final installment is repaid", async () => {
+      const before = await program.account.userVault.fetch(vaultPDA);
+      assert.equal(before.activeLoans, 1, "should have 1 active loan before repay");
+
+      await repay(0);
+      await repay(1);
+
+      const after = await program.account.userVault.fetch(vaultPDA);
+      assert.equal(after.activeLoans, 0, "active_loans must be 0 after full repayment");
+    });
+
+    it("increments bank_pool.usdc_available by installment amount on repay", async () => {
+      const before = await program.account.bankPool.fetch(bankPoolPDA);
+      await repay(0);
+      const after = await program.account.bankPool.fetch(bankPoolPDA);
+      assert.ok(
+        new BN(after.usdcAvailable).eq(
+          new BN(before.usdcAvailable).add(new BN(185_000_000))
+        ),
+        "usdc_available must increase by the repaid installment amount"
+      );
+    });
+
     it("rejects repayment of an already-paid installment (InstallmentAlreadyPaid)", async () => {
       await repay(0);
       try {
@@ -1045,12 +1127,13 @@ describe("avere", () => {
         await program.methods
           .repayInstallment(0)
           .accounts({
-            owner:        attacker.publicKey,
-            loan:         loanPDA,
+            owner:          attacker.publicKey,
+            loan:           loanPDA,
+            bankPool:       bankPoolPDA,
             usdcMint,
             userUsdcAta,
             bankPoolUsdcAta,
-            tokenProgram: TOKEN_PROGRAM_ID,
+            tokenProgram:   TOKEN_PROGRAM_ID,
           } as any)
           .signers([attacker])
           .rpc();
@@ -1062,10 +1145,40 @@ describe("avere", () => {
   });
 
   // ═══════════════════════════════════════════════════════════════════════════
-  // rebalance_yield — @devnet-only
+  // rebalance_yield — stub on localnet, CPI on devnet
   // ═══════════════════════════════════════════════════════════════════════════
 
   describe("rebalance_yield", () => {
+    beforeEach(async () => {
+      await initVault();
+    });
+
+    it("stub: instruction is callable and returns success on localnet", async () => {
+      // handler is a no-op stub until Kamino CPI is wired; it must not revert
+      await program.methods
+        .rebalanceYield()
+        .accounts({ owner: user.publicKey })
+        .signers([user])
+        .rpc();
+    });
+
+    it("rejects call from a non-owner signer", async () => {
+      const attacker = Keypair.generate();
+      await airdrop(conn, attacker.publicKey);
+
+      try {
+        // attacker's vault PDA doesn't exist → expect account-not-found or Unauthorized
+        await program.methods
+          .rebalanceYield()
+          .accounts({ owner: attacker.publicKey })
+          .signers([attacker])
+          .rpc();
+        assert.fail("expected error for non-owner signer");
+      } catch (err: any) {
+        assert.ok(err);
+      }
+    });
+
     it.skip("@devnet-only: deposits free USDC into Kamino and increases kamino_shares", () => {});
     it.skip("@devnet-only: never sends usdc_locked to Kamino", () => {});
     it.skip("@devnet-only: uses the correct Kamino split % for the vault's tier", () => {});
@@ -1076,8 +1189,361 @@ describe("avere", () => {
   // ═══════════════════════════════════════════════════════════════════════════
 
   describe("open_defi_loan", () => {
+    it("returns NotImplemented error — Phase 4 Pyth oracle + Kamino stub", async () => {
+      await initVault();
+
+      try {
+        await program.methods
+          .openDefiLoan(new BN(LAMPORTS_PER_SOL), new BN(1_000_000))
+          .accounts({ owner: user.publicKey })
+          .signers([user])
+          .rpc();
+        assert.fail("expected NotImplemented");
+      } catch (err: any) {
+        assert.ok(
+          err.error?.errorCode?.code === "NotImplemented" ||
+          err.message?.includes("NotImplemented"),
+          "openDefiLoan must return NotImplemented until Pyth/Kamino CPI is wired"
+        );
+      }
+    });
+
     it.skip("@devnet-only: locks SOL collateral, reads Pyth, disburses USDC", () => {});
     it.skip("@devnet-only: rejects borrow exceeding 70% LTV (CollateralTooLow)", () => {});
+  });
+
+  // ═══════════════════════════════════════════════════════════════════════════
+  // initialize_bank_pool
+  // ═══════════════════════════════════════════════════════════════════════════
+
+  describe("initialize_bank_pool", () => {
+    // BankPool is initialized in the global before() — we verify the resulting state.
+
+    it("creates BankPool with a valid bump and usdc_available = 0", async () => {
+      const pool = await program.account.bankPool.fetch(bankPoolPDA);
+      assert.isAbove(pool.bump, 0, "bump must be a non-zero PDA bump");
+      assert.ok(new BN(pool.usdcAvailable).isZero(), "usdc_available must start at 0");
+    });
+
+    it("BankPool PDA address is deterministic (only seed is 'bank-pool')", () => {
+      const [rederived] = deriveBankPoolPDA(program.programId);
+      assert.ok(rederived.equals(bankPoolPDA), "re-derived PDA must match stored address");
+    });
+
+    it("idempotency: second init attempt fails — account already in use", async () => {
+      try {
+        await program.methods
+          .initializeBankPool()
+          .accounts({ authority: provider.wallet.publicKey })
+          .rpc();
+        assert.fail("expected account-already-in-use error");
+      } catch (err: any) {
+        assert.ok(
+          err.message?.includes("already in use") ||
+          err.logs?.some((l: string) => l.includes("already in use")),
+          "error must indicate account already exists"
+        );
+      }
+    });
+  });
+
+  // ═══════════════════════════════════════════════════════════════════════════
+  // close_loan
+  // ═══════════════════════════════════════════════════════════════════════════
+
+  describe("close_loan", () => {
+    const CLOSE_LOAN_ID = 0;
+    let closeLoanPDA:  PublicKey;
+    let closeUserUsdc: PublicKey;
+
+    /**
+     * Full lifecycle helper: approve → disburse → repay all installments.
+     * Leaves the loan in Paid status, ready for close_loan.
+     */
+    async function runFullLoanToCompletion(loanId = CLOSE_LOAN_ID): Promise<void> {
+      [closeLoanPDA] = deriveLoanTradPDA(vaultPDA, loanId, program.programId);
+      ({ userUsdcAta: closeUserUsdc } = await setupUsdcAccounts(10_000_000_000));
+
+      await program.methods
+        .approveTraditionalLoan(
+          new BN(200_000_000), 975, new BN(0), 0, 100, 975, 975,
+          makeInstallments(2, 110_000_000)
+        )
+        .accounts({ owner: user.publicKey, loan: closeLoanPDA } as any)
+        .signers([user])
+        .rpc();
+
+      await fundBankPool(10_000_000_000);
+
+      await program.methods
+        .disburseTraditional()
+        .accounts({
+          owner: user.publicKey, loan: closeLoanPDA, usdcMint,
+          bankPoolUsdcAta, userUsdcAta: closeUserUsdc,
+          tokenProgram: TOKEN_PROGRAM_ID,
+        } as any)
+        .signers([user])
+        .rpc();
+
+      for (let i = 0; i < 2; i++) {
+        await program.methods
+          .repayInstallment(i)
+          .accounts({
+            owner: user.publicKey, loan: closeLoanPDA, bankPool: bankPoolPDA,
+            usdcMint, userUsdcAta: closeUserUsdc, bankPoolUsdcAta,
+            tokenProgram: TOKEN_PROGRAM_ID,
+          } as any)
+          .signers([user])
+          .rpc();
+      }
+    }
+
+    beforeEach(async () => {
+      await initVault();
+      await setScore(810); // Tier A
+    });
+
+    it("closes a fully paid loan and removes the on-chain account", async () => {
+      await runFullLoanToCompletion();
+
+      await program.methods
+        .closeLoan()
+        .accounts({ owner: user.publicKey, loan: closeLoanPDA } as any)
+        .signers([user])
+        .rpc();
+
+      try {
+        await program.account.loanAccountTraditional.fetch(closeLoanPDA);
+        assert.fail("account must not exist after close");
+      } catch (err: any) {
+        assert.ok(
+          err.message?.includes("Account does not exist") ||
+          err.message?.includes("could not find account") ||
+          err.message?.includes("Failed to find account"),
+          "fetch must fail after account is deleted"
+        );
+      }
+    });
+
+    it("returns rent lamports to the owner on close", async () => {
+      await runFullLoanToCompletion();
+
+      const ownerBefore = await conn.getBalance(user.publicKey);
+
+      await program.methods
+        .closeLoan()
+        .accounts({ owner: user.publicKey, loan: closeLoanPDA } as any)
+        .signers([user])
+        .rpc();
+
+      const ownerAfter = await conn.getBalance(user.publicKey);
+      // Rent recovery (~2.6M lamports for max_space account) far exceeds the tx fee (~5K lamports)
+      assert.isAbove(ownerAfter, ownerBefore, "rent must exceed tx fee — owner balance must increase");
+    });
+
+    it("rejects closing an Active loan (LoanNotActive)", async () => {
+      const [activeLoanPDA] = deriveLoanTradPDA(vaultPDA, CLOSE_LOAN_ID, program.programId);
+
+      await program.methods
+        .approveTraditionalLoan(
+          new BN(100_000_000), 975, new BN(0), 0, 100, 975, 975,
+          makeInstallments(1, 110_000_000)
+        )
+        .accounts({ owner: user.publicKey, loan: activeLoanPDA } as any)
+        .signers([user])
+        .rpc();
+
+      try {
+        await program.methods
+          .closeLoan()
+          .accounts({ owner: user.publicKey, loan: activeLoanPDA } as any)
+          .signers([user])
+          .rpc();
+        assert.fail("expected LoanNotActive");
+      } catch (err: any) {
+        assert.ok(
+          err.error?.errorCode?.code === "LoanNotActive" ||
+          err.message?.includes("LoanNotActive"),
+          "error must be LoanNotActive"
+        );
+      }
+    });
+
+    it("rejects closing a partially repaid loan (still Active)", async () => {
+      // beforeEach already called initVault + setScore(810)
+      // Approve a 3-installment loan, pay only 1 of 3
+      const [partialLoanPDA] = deriveLoanTradPDA(vaultPDA, 0, program.programId);
+      const { userUsdcAta: partialUserUsdc } = await setupUsdcAccounts(10_000_000_000);
+
+      await program.methods
+        .approveTraditionalLoan(
+          new BN(100_000_000), 975, new BN(0), 0, 100, 975, 975,
+          makeInstallments(3, 40_000_000)
+        )
+        .accounts({ owner: user.publicKey, loan: partialLoanPDA } as any)
+        .signers([user])
+        .rpc();
+
+      await fundBankPool(10_000_000_000);
+
+      await program.methods
+        .disburseTraditional()
+        .accounts({
+          owner: user.publicKey, loan: partialLoanPDA, usdcMint,
+          bankPoolUsdcAta, userUsdcAta: partialUserUsdc,
+          tokenProgram: TOKEN_PROGRAM_ID,
+        } as any)
+        .signers([user])
+        .rpc();
+
+      // Pay only installment 0 of 3 — loan status remains Active
+      await program.methods
+        .repayInstallment(0)
+        .accounts({
+          owner: user.publicKey, loan: partialLoanPDA, bankPool: bankPoolPDA,
+          usdcMint, userUsdcAta: partialUserUsdc, bankPoolUsdcAta,
+          tokenProgram: TOKEN_PROGRAM_ID,
+        } as any)
+        .signers([user])
+        .rpc();
+
+      try {
+        await program.methods
+          .closeLoan()
+          .accounts({ owner: user.publicKey, loan: partialLoanPDA } as any)
+          .signers([user])
+          .rpc();
+        assert.fail("expected LoanNotActive for partially repaid loan");
+      } catch (err: any) {
+        assert.ok(
+          err.error?.errorCode?.code === "LoanNotActive" ||
+          err.message?.includes("LoanNotActive")
+        );
+      }
+    });
+
+    it("rejects close by a non-owner signer (vault PDA mismatch)", async () => {
+      await runFullLoanToCompletion();
+
+      const attacker = Keypair.generate();
+      await airdrop(conn, attacker.publicKey);
+
+      try {
+        await program.methods
+          .closeLoan()
+          .accounts({ owner: attacker.publicKey, loan: closeLoanPDA } as any)
+          .signers([attacker])
+          .rpc();
+        assert.fail("expected authorization error");
+      } catch (err: any) {
+        assert.ok(err, "non-owner must not close another user's loan");
+      }
+    });
+
+    it("second close attempt fails — account is already deleted", async () => {
+      await runFullLoanToCompletion();
+
+      await program.methods
+        .closeLoan()
+        .accounts({ owner: user.publicKey, loan: closeLoanPDA } as any)
+        .signers([user])
+        .rpc();
+
+      try {
+        await program.methods
+          .closeLoan()
+          .accounts({ owner: user.publicKey, loan: closeLoanPDA } as any)
+          .signers([user])
+          .rpc();
+        assert.fail("expected error on second close");
+      } catch (err: any) {
+        assert.ok(err, "second close must fail because account no longer exists");
+      }
+    });
+  });
+
+  // ═══════════════════════════════════════════════════════════════════════════
+  // withdraw — stub (Kamino CPI wired in Phase 5)
+  // ═══════════════════════════════════════════════════════════════════════════
+
+  describe("withdraw", () => {
+    beforeEach(async () => {
+      await initVault();
+    });
+
+    it("returns NotImplemented error — Phase 4 Kamino CPI stub", async () => {
+      try {
+        await program.methods
+          .withdraw(new BN(1_000_000))
+          .accounts({ owner: user.publicKey })
+          .signers([user])
+          .rpc();
+        assert.fail("expected NotImplemented");
+      } catch (err: any) {
+        assert.ok(
+          err.error?.errorCode?.code === "NotImplemented" ||
+          err.message?.includes("NotImplemented"),
+          "withdraw must return NotImplemented until Kamino CPI is wired"
+        );
+      }
+    });
+
+    it("rejects call from a non-owner signer (vault PDA not found)", async () => {
+      const attacker = Keypair.generate();
+      await airdrop(conn, attacker.publicKey);
+
+      try {
+        await program.methods
+          .withdraw(new BN(1_000_000))
+          .accounts({ owner: attacker.publicKey })
+          .signers([attacker])
+          .rpc();
+        assert.fail("expected error for attacker without a vault");
+      } catch (err: any) {
+        assert.ok(err);
+      }
+    });
+  });
+
+  // ═══════════════════════════════════════════════════════════════════════════
+  // liquidate — stub (Pyth oracle + LTV check wired in Phase 5)
+  // ═══════════════════════════════════════════════════════════════════════════
+
+  describe("liquidate", () => {
+    it("returns NotImplemented error — Phase 4 Pyth oracle + LTV stub", async () => {
+      await initVault();
+
+      try {
+        await program.methods
+          .liquidate()
+          .accounts({ liquidator: user.publicKey, vault: vaultPDA } as any)
+          .signers([user])
+          .rpc();
+        assert.fail("expected NotImplemented");
+      } catch (err: any) {
+        assert.ok(
+          err.error?.errorCode?.code === "NotImplemented" ||
+          err.message?.includes("NotImplemented"),
+          "liquidate must return NotImplemented until Pyth CPI is wired"
+        );
+      }
+    });
+
+    it("rejects liquidation of a non-existent vault", async () => {
+      const ghost = Keypair.generate();
+      const [ghostVaultPDA] = deriveVaultPDA(ghost.publicKey, program.programId);
+
+      try {
+        await program.methods
+          .liquidate()
+          .accounts({ liquidator: user.publicKey, vault: ghostVaultPDA } as any)
+          .signers([user])
+          .rpc();
+        assert.fail("expected error for non-existent vault");
+      } catch (err: any) {
+        assert.ok(err, "liquidating a ghost vault must fail");
+      }
+    });
   });
 
   // ═══════════════════════════════════════════════════════════════════════════
@@ -1166,7 +1632,7 @@ describe("avere", () => {
         .signers([user]).rpc();
 
       await program.methods.repayInstallment(0)
-        .accounts({ owner: user.publicKey, loan: loanPDA, usdcMint, userUsdcAta, bankPoolUsdcAta, tokenProgram: TOKEN_PROGRAM_ID } as any)
+        .accounts({ owner: user.publicKey, loan: loanPDA, bankPool: bankPoolPDA, usdcMint, userUsdcAta, bankPoolUsdcAta, tokenProgram: TOKEN_PROGRAM_ID } as any)
         .signers([user]).rpc();
 
       const loan = await program.account.loanAccountTraditional.fetch(loanPDA);
@@ -1175,6 +1641,198 @@ describe("avere", () => {
         0,
         "paid_ts must NEVER be zero after a repayment — blueprint rule 8"
       );
+    });
+
+    it("repay_installment on a Paid loan is rejected (LoanNotActive)", async () => {
+      await initVault();
+      await setScore(810);
+
+      const [loanPDA] = deriveLoanTradPDA(vaultPDA, 0, program.programId);
+      const { userUsdcAta } = await setupUsdcAccounts(10_000_000_000);
+
+      await program.methods
+        .approveTraditionalLoan(
+          new BN(100_000_000), 975, new BN(0), 0, 100, 975, 975,
+          makeInstallments(1, 110_000_000)
+        )
+        .accounts({ owner: user.publicKey, loan: loanPDA } as any)
+        .signers([user])
+        .rpc();
+
+      await fundBankPool(5_000_000_000);
+
+      await program.methods
+        .disburseTraditional()
+        .accounts({ owner: user.publicKey, loan: loanPDA, usdcMint, bankPoolUsdcAta, userUsdcAta, tokenProgram: TOKEN_PROGRAM_ID } as any)
+        .signers([user])
+        .rpc();
+
+      // Repay sole installment → status becomes Paid
+      await program.methods
+        .repayInstallment(0)
+        .accounts({ owner: user.publicKey, loan: loanPDA, bankPool: bankPoolPDA, usdcMint, userUsdcAta, bankPoolUsdcAta, tokenProgram: TOKEN_PROGRAM_ID } as any)
+        .signers([user])
+        .rpc();
+
+      // A second repay must fail — status is now Paid, not Active
+      try {
+        await program.methods
+          .repayInstallment(0)
+          .accounts({ owner: user.publicKey, loan: loanPDA, bankPool: bankPoolPDA, usdcMint, userUsdcAta, bankPoolUsdcAta, tokenProgram: TOKEN_PROGRAM_ID } as any)
+          .signers([user])
+          .rpc();
+        assert.fail("expected LoanNotActive or InstallmentAlreadyPaid");
+      } catch (err: any) {
+        assert.ok(
+          err.error?.errorCode?.code === "LoanNotActive" ||
+          err.error?.errorCode?.code === "InstallmentAlreadyPaid" ||
+          err.message?.includes("LoanNotActive") ||
+          err.message?.includes("InstallmentAlreadyPaid")
+        );
+      }
+    });
+  });
+
+  // ═══════════════════════════════════════════════════════════════════════════
+  // End-to-end: full loan lifecycle
+  // ═══════════════════════════════════════════════════════════════════════════
+
+  describe("end-to-end: full loan lifecycle", () => {
+    it("deposit → update_score → approve (hybrid) → disburse → repay-all → close", async () => {
+      await initVault();
+
+      // ── 1. Earn deposit ──────────────────────────────────────────────────
+      const { userUsdcAta, vaultUsdcAta } = await setupUsdcAccounts(20_000_000_000);
+
+      await program.methods
+        .depositUsdc(new BN(1_000_000_000))         // $1 000 USDC
+        .accounts({ owner: user.publicKey, usdcMint, userUsdcAta, vaultUsdcAta, tokenProgram: TOKEN_PROGRAM_ID } as any)
+        .signers([user])
+        .rpc();
+
+      // ── 2. Score update (simulates off-chain engine response) ────────────
+      await setScore(850); // Tier A — earn deposit +15 pts baked in
+
+      let vault = await program.account.userVault.fetch(vaultPDA);
+      assert.equal(vault.score, 850);
+      assert.deepEqual(vault.scoreTier, { a: {} });
+      assert.ok(new BN(vault.usdcDeposited).eq(new BN(1_000_000_000)));
+
+      // ── 3. Approve loan with full hybrid split (Tier A max: 70% DeFi) ───
+      const principal  = new BN(500_000_000);  // $500 USDC
+      const collateral = new BN(350_000_000);  // $350 USDC locked as DeFi collateral
+      const schedule   = makeInstallments(3, 180_000_000);
+
+      const [loanPDA] = deriveLoanTradPDA(vaultPDA, 0, program.programId);
+
+      await program.methods
+        .approveTraditionalLoan(
+          principal,
+          975,           // blended rate 9.75% APR
+          collateral,
+          70, 30,        // 70% DeFi / 30% traditional (Tier A max)
+          575, 975,      // defi_rate = 5.75%, trad_rate = 9.75%
+          schedule
+        )
+        .accounts({ owner: user.publicKey, loan: loanPDA } as any)
+        .signers([user])
+        .rpc();
+
+      vault = await program.account.userVault.fetch(vaultPDA);
+      assert.equal(vault.activeLoans, 1);
+      assert.ok(new BN(vault.usdcLocked).eq(collateral), "collateral must be locked in vault");
+
+      let loan = await program.account.loanAccountTraditional.fetch(loanPDA);
+      assert.ok(new BN(loan.principal).eq(principal));
+      assert.equal(loan.fixedRateBps, 975);
+      assert.equal(loan.hybridDefiPct, 70);
+      assert.equal(loan.hybridTradPct, 30);
+      assert.equal(loan.defiRateBps, 575);
+      assert.equal(loan.tradRateBps, 975);
+      assert.equal(loan.nInstallments, 3);
+      assert.equal(loan.paidCount, 0);
+      assert.deepEqual(loan.status, { active: {} });
+      assert.deepEqual(loan.scoreTier, { a: {} });
+      assert.equal(loan.disbursedAt.toString(), "0", "disbursed_at must be 0 before disburse");
+
+      // ── 4. Disburse ──────────────────────────────────────────────────────
+      await fundBankPool(10_000_000_000);
+      const userBefore = (await getAccount(conn, userUsdcAta)).amount;
+      const poolBefore = (await getAccount(conn, bankPoolUsdcAta)).amount;
+
+      await program.methods
+        .disburseTraditional()
+        .accounts({
+          owner: user.publicKey, loan: loanPDA, usdcMint,
+          bankPoolUsdcAta, userUsdcAta, tokenProgram: TOKEN_PROGRAM_ID,
+        } as any)
+        .signers([user])
+        .rpc();
+
+      const userAfter = (await getAccount(conn, userUsdcAta)).amount;
+      const poolAfter = (await getAccount(conn, bankPoolUsdcAta)).amount;
+      assert.equal(userAfter - userBefore, BigInt(principal.toString()), "user must receive principal");
+      assert.equal(poolBefore - poolAfter, BigInt(principal.toString()), "pool must decrease by principal");
+
+      loan = await program.account.loanAccountTraditional.fetch(loanPDA);
+      assert.isAbove(new BN(loan.disbursedAt).toNumber(), 0, "disbursed_at must be set after disburse");
+
+      // ── 5. Repay all 3 installments ──────────────────────────────────────
+      const poolBeforeRepay = await program.account.bankPool.fetch(bankPoolPDA);
+
+      for (let i = 0; i < 3; i++) {
+        await program.methods
+          .repayInstallment(i)
+          .accounts({
+            owner: user.publicKey, loan: loanPDA, bankPool: bankPoolPDA,
+            usdcMint, userUsdcAta, bankPoolUsdcAta, tokenProgram: TOKEN_PROGRAM_ID,
+          } as any)
+          .signers([user])
+          .rpc();
+      }
+
+      loan = await program.account.loanAccountTraditional.fetch(loanPDA);
+      assert.deepEqual(loan.status, { paid: {} }, "loan must be Paid after all installments cleared");
+      assert.equal(loan.paidCount, 3);
+
+      for (let i = 0; i < 3; i++) {
+        assert.isTrue(loan.installments[i].paid, `installment ${i} must be marked paid`);
+        assert.isAbove(
+          new BN(loan.installments[i].paidTs).toNumber(), 0,
+          `paid_ts for installment ${i} must be non-zero (blueprint rule 8)`
+        );
+      }
+
+      vault = await program.account.userVault.fetch(vaultPDA);
+      assert.equal(vault.activeLoans, 0, "active_loans must be 0 after full repayment");
+
+      const poolAfterRepay = await program.account.bankPool.fetch(bankPoolPDA);
+      const totalRepaid = 3 * 180_000_000;
+      assert.ok(
+        new BN(poolAfterRepay.usdcAvailable).eq(
+          new BN(poolBeforeRepay.usdcAvailable).add(new BN(totalRepaid))
+        ),
+        "usdc_available must increase by total repaid amount"
+      );
+
+      // ── 6. Close loan — recover rent ─────────────────────────────────────
+      const ownerBefore = await conn.getBalance(user.publicKey);
+
+      await program.methods
+        .closeLoan()
+        .accounts({ owner: user.publicKey, loan: loanPDA } as any)
+        .signers([user])
+        .rpc();
+
+      const ownerBalanceAfter = await conn.getBalance(user.publicKey);
+      assert.isAbove(ownerBalanceAfter, ownerBefore, "rent recovery must exceed tx fee");
+
+      try {
+        await program.account.loanAccountTraditional.fetch(loanPDA);
+        assert.fail("loan account must be deleted after close");
+      } catch (e: any) {
+        assert.ok(e, "account must not exist after close");
+      }
     });
   });
 });
