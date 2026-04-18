@@ -3,9 +3,17 @@
 
 import { PublicKey, Transaction } from "@solana/web3.js";
 
-const SCORE_API = import.meta.env.VITE_SCORE_API ?? "http://localhost:8000";
+const SCORE_API = import.meta.env.VITE_SCORE_API ?? "";
 
 // ── Types ─────────────────────────────────────────────────────────────────────
+
+export interface ScoreBreakdown {
+  cashflow_score: number;        // 0–1000, weight 30%
+  income_score: number;          // 0–1000, weight 35%
+  onchain_score: number;         // 0–1000, weight 20%
+  payment_history_score: number; // 0–1000, weight 15%
+  macro_multiplier: number;      // 0.8–1.0
+}
 
 export interface ScoreResponse {
   score: number;
@@ -13,6 +21,7 @@ export interface ScoreResponse {
   max_loan_usdc: number;   // base units (6 dec)
   min_loan_usdc: number;   // base units (6 dec)
   base_rate_bps: number;
+  breakdown: ScoreBreakdown;
 }
 
 export interface InstallmentItem {
@@ -46,13 +55,41 @@ export interface InstallmentsResponse {
 
 // ── API calls ─────────────────────────────────────────────────────────────────
 
-export async function fetchScore(wallet: string): Promise<ScoreResponse> {
-  const res = await fetch(`${SCORE_API}/score?wallet=${encodeURIComponent(wallet)}`);
+export async function fetchScore(wallet: string, plaidToken?: string): Promise<ScoreResponse> {
+  const params = new URLSearchParams({ wallet });
+  if (plaidToken) params.set("plaid_token", plaidToken);
+  const res = await fetch(`${SCORE_API}/score?${params}`);
   if (!res.ok) {
     const err = await res.json().catch(() => ({}));
     throw new Error(err.detail ?? `Score API error ${res.status}`);
   }
   return res.json();
+}
+
+export async function fetchPlaidLinkToken(wallet: string): Promise<string> {
+  const res = await fetch(
+    `${SCORE_API}/score/plaid/link-token?wallet=${encodeURIComponent(wallet)}&plaid_env=sandbox`
+  );
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({}));
+    throw new Error(err.detail ?? `Link token error ${res.status}`);
+  }
+  const { link_token } = await res.json();
+  return link_token;
+}
+
+export async function exchangePlaidToken(publicToken: string): Promise<string> {
+  const res = await fetch(`${SCORE_API}/score/plaid/exchange`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ public_token: publicToken, plaid_env: "sandbox" }),
+  });
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({}));
+    throw new Error(err.detail ?? `Token exchange error ${res.status}`);
+  }
+  const { access_token } = await res.json();
+  return access_token;
 }
 
 export async function fetchInstallments(

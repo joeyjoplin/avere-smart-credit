@@ -1,5 +1,5 @@
 {
-  "address": "8AUqDmrhdj55j6a2QcwYnm2j8oxUYgefZAH5sShqbx2H",
+  "address": "FCfqU7hKCSZGkmPiVqZqhjq2v585uwPM4VvieqgnJm2j",
   "metadata": {
     "name": "smartcontracts",
     "version": "0.1.0",
@@ -257,8 +257,9 @@
         {
           "name": "usdc_mint",
           "docs": [
-            "USDC mint — required for transfer_checked"
-          ]
+            "USDC mint — validated against the known Circle devnet USDC address"
+          ],
+          "address": "4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU"
         },
         {
           "name": "user_usdc_ata",
@@ -359,13 +360,14 @@
         {
           "name": "usdc_mint",
           "docs": [
-            "USDC mint — required for transfer_checked"
-          ]
+            "USDC mint — validated against the known Circle devnet USDC address"
+          ],
+          "address": "4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU"
         },
         {
           "name": "bank_pool_usdc_ata",
           "docs": [
-            "BankPool's USDC ATA (source of funds)"
+            "BankPool's USDC ATA (source of funds) — authority + mint constrained to prevent substitution"
           ],
           "writable": true
         },
@@ -656,6 +658,7 @@
         },
         {
           "name": "vault",
+          "writable": true,
           "pda": {
             "seeds": [
               {
@@ -683,10 +686,33 @@
           "writable": true
         },
         {
+          "name": "bank_pool",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  98,
+                  97,
+                  110,
+                  107,
+                  45,
+                  112,
+                  111,
+                  111,
+                  108
+                ]
+              }
+            ]
+          }
+        },
+        {
           "name": "usdc_mint",
           "docs": [
-            "USDC mint — required for transfer_checked"
-          ]
+            "USDC mint — validated against the known Circle devnet USDC address"
+          ],
+          "address": "4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU"
         },
         {
           "name": "user_usdc_ata",
@@ -698,7 +724,7 @@
         {
           "name": "bank_pool_usdc_ata",
           "docs": [
-            "BankPool USDC ATA (destination)"
+            "BankPool USDC ATA (destination) — authority + mint constrained to prevent redirection"
           ],
           "writable": true
         },
@@ -733,6 +759,14 @@
           "relations": [
             "vault"
           ]
+        },
+        {
+          "name": "score_authority",
+          "docs": [
+            "Score engine oracle — must be signed by the program's oracle keypair.",
+            "Constraint disabled in localnet builds so tests can use any signer."
+          ],
+          "signer": true
         },
         {
           "name": "vault",
@@ -890,7 +924,7 @@
     {
       "code": 6005,
       "name": "LoanBelowMinimum",
-      "msg": "Loan amount below minimum ($50 USDC)"
+      "msg": "Loan amount below minimum ($1 USDC)"
     },
     {
       "code": 6006,
@@ -961,6 +995,21 @@
       "code": 6019,
       "name": "ZeroDeposit",
       "msg": "Deposit amount must be greater than zero"
+    },
+    {
+      "code": 6020,
+      "name": "InvalidMint",
+      "msg": "Invalid USDC mint — expected Circle devnet USDC"
+    },
+    {
+      "code": 6021,
+      "name": "InvalidHybridSplit",
+      "msg": "hybrid_defi_pct + hybrid_trad_pct must equal 100"
+    },
+    {
+      "code": 6022,
+      "name": "NotImplemented",
+      "msg": "Instruction not yet implemented (Phase 4)"
     }
   ],
   "types": [

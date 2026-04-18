@@ -323,4 +323,5 @@ def build_score_response(score_result: dict, fed_funds_upper_bps: int) -> dict:
         "max_loan_usdc":  MAX_LOAN_BY_TIER[tier],
         "min_loan_usdc":  MIN_LOAN_USDC,
         "base_rate_bps":  base_rate_bps,
+        "breakdown":      score_result["breakdown"],
     }

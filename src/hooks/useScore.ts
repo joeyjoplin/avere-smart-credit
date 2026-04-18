@@ -2,14 +2,17 @@ import { useQuery } from "@tanstack/react-query";
 import { useWallet } from "@solana/wallet-adapter-react";
 import { fetchScore } from "@/lib/score-api";
 import type { ScoreResponse } from "@/lib/score-api";
+import { usePlaidToken } from "./usePlaidToken";
 
 export function useScore() {
   const { publicKey } = useWallet();
+  const walletStr = publicKey?.toBase58() ?? null;
+  const { token: plaidToken } = usePlaidToken(walletStr);
 
   return useQuery<ScoreResponse>({
-    queryKey: ["score", publicKey?.toBase58()],
+    queryKey: ["score", walletStr, plaidToken ?? "random"],
     enabled: !!publicKey,
-    staleTime: 5 * 60 * 1000, // cache 5 min — score engine says to cache for entire loan flow
-    queryFn: () => fetchScore(publicKey!.toBase58()),
+    staleTime: 5 * 60 * 1000,
+    queryFn: () => fetchScore(publicKey!.toBase58(), plaidToken ?? undefined),
   });
 }

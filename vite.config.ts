@@ -9,6 +9,12 @@ export default defineConfig(({ mode }) => ({
   server: {
     host: "::",
     port: 8080,
+    proxy: {
+      "/score": { target: "http://localhost:8000", changeOrigin: true },
+      "/oracle-pubkey": { target: "http://localhost:8000", changeOrigin: true },
+      "/passkey": { target: "http://localhost:8000", changeOrigin: true },
+      "/health": { target: "http://localhost:8000", changeOrigin: true },
+    },
   },
   plugins: [
     react(),

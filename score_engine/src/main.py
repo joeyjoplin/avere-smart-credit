@@ -33,7 +33,7 @@ ORACLE_PUBKEY_STR: str = str(ORACLE_KEYPAIR.pubkey())
 
 from config import resolve_score_mode, get_profile_name, PROFILES_DIR
 from macro_data import get_macro_indicators
-from score import compute_score, build_score_response
+from score import compute_score, build_score_response, MIN_LOAN_USDC
 from amortization import compute_installments
 from income_data import fetch_plaid_data, fetch_argyle_data, PLAID_CLIENT_ID, PLAID_SECRET_SANDBOX, PLAID_SECRET_PROD, PLAID_URLS
 from onchain_data import fetch_helius_data
@@ -43,6 +43,14 @@ app = FastAPI(
     description="Credit scoring API for Avere hybrid neobank (Solana devnet)",
     version="0.2.0",
 )
+
+# ── Passkey routes ────────────────────────────────────────────────────────────
+from passkey_routes import router as passkey_router  # noqa: E402
+app.include_router(passkey_router)
+
+# In-memory score cache: wallet → score. Populated by GET /score, read by sign-update-score
+# so oracle can validate sandbox/live scores without a full re-fetch.
+_score_cache: dict[str, int] = {}
 
 # ── CORS ──────────────────────────────────────────────────────────────────────
 # Allow frontend origins. Override via CORS_ORIGINS env var (comma-separated).
@@ -77,12 +85,20 @@ class Installment(BaseModel):
 
 # ── GET /score ────────────────────────────────────────────────────────────────
 
+class ScoreBreakdown(BaseModel):
+    cashflow_score: int = Field(..., description="Cashflow sub-score (0–1000, weight 30%)")
+    income_score: int = Field(..., description="Income sub-score (0–1000, weight 35%)")
+    onchain_score: int = Field(..., description="On-chain activity sub-score (0–1000, weight 20%)")
+    payment_history_score: int = Field(..., description="Repayment history sub-score (0–1000, weight 15%)")
+    macro_multiplier: float = Field(..., description="Macro risk multiplier applied to raw score (0.8–1.0)")
+
 class ScoreResponse(BaseModel):
     score: int = Field(..., ge=0, le=1000, description="Avere credit score (0–1000)")
     tier: str = Field(..., description="Score tier: A | B | C | D")
     max_loan_usdc: int = Field(..., description="Maximum approved loan in USDC base units")
     min_loan_usdc: int = Field(..., description="Minimum loan floor in USDC base units")
     base_rate_bps: int = Field(..., description="Base contract rate in basis points (Fed Funds + tier spread)")
+    breakdown: ScoreBreakdown = Field(..., description="Per-factor sub-scores driving the final score")
 
 @app.get("/score", response_model=ScoreResponse)
 async def get_score(
@@ -111,11 +127,25 @@ async def get_score(
 
     elif mode in ("sandbox", "live"):
         if not plaid_token:
-            raise HTTPException(
-                status_code=422,
-                detail="plaid_token is required for sandbox/live mode. "
-                       "Complete the Plaid Link flow first.",
-            )
+            # No bank linked yet — return a tier-D pending score so the frontend
+            # shows the Plaid Link gate instead of erroring.
+            macro = await get_macro_indicators()
+            pending: dict = {
+                "score": 0,
+                "tier": "D",
+                "max_loan_usdc": 0,
+                "min_loan_usdc": MIN_LOAN_USDC,
+                "base_rate_bps": macro["fed_funds_upper_bps"],
+                "breakdown": {
+                    "cashflow_score": 0,
+                    "income_score": 0,
+                    "onchain_score": 0,
+                    "payment_history_score": 0,
+                    "macro_multiplier": 1.0,
+                },
+            }
+            _score_cache[wallet] = 0
+            return pending
         plaid_env = "production" if mode == "live" else "sandbox"
 
         plaid_data, onchain_data = await _fetch_plaid_and_onchain(
@@ -138,7 +168,9 @@ async def get_score(
 
     macro  = await get_macro_indicators()
     result = compute_score(profile, macro)
-    return build_score_response(result, macro["fed_funds_upper_bps"])
+    response = build_score_response(result, macro["fed_funds_upper_bps"])
+    _score_cache[wallet] = response["score"]
+    return response
 
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
@@ -260,6 +292,55 @@ def post_installments(body: InstallmentsRequest):
     )
     return result
 
+# ── GET /score/plaid/link-token ───────────────────────────────────────────────
+
+class LinkTokenResponse(BaseModel):
+    link_token: str = Field(..., description="Plaid link_token — pass to usePlaidLink({ token })")
+    expiration: str = Field(..., description="ISO 8601 expiration time (30 min from creation)")
+
+@app.get("/score/plaid/link-token", response_model=LinkTokenResponse)
+async def get_plaid_link_token(
+    wallet: str = Query(..., description="Solana public key used as the Plaid client_user_id"),
+    plaid_env: str = Query("sandbox", description="'sandbox' or 'production'"),
+):
+    """
+    Create a Plaid link_token for the given wallet. The frontend initializes
+    usePlaidLink({ token: link_token }) with this value, then exchanges the
+    resulting public_token via POST /score/plaid/exchange.
+    """
+    if not PLAID_CLIENT_ID:
+        raise HTTPException(status_code=503, detail="PLAID_CLIENT_ID is not configured")
+    env = plaid_env if plaid_env in ("sandbox", "production") else "sandbox"
+    base_url = PLAID_URLS.get(env, PLAID_URLS["sandbox"])
+    secret = PLAID_SECRET_PROD if env == "production" else PLAID_SECRET_SANDBOX
+
+    try:
+        async with httpx.AsyncClient(timeout=10.0) as client:
+            resp = await client.post(
+                f"{base_url}/link/token/create",
+                json={
+                    "client_id": PLAID_CLIENT_ID,
+                    "secret": secret,
+                    "client_name": "Avere",
+                    "user": {"client_user_id": wallet},
+                    "products": ["transactions"],
+                    "country_codes": ["US"],
+                    "language": "en",
+                },
+            )
+            resp.raise_for_status()
+            data = resp.json()
+    except httpx.HTTPStatusError as exc:
+        raise HTTPException(
+            status_code=502,
+            detail=f"Plaid link_token creation failed ({exc.response.status_code}): {exc.response.text[:200]}",
+        ) from exc
+    except httpx.RequestError as exc:
+        raise HTTPException(status_code=502, detail=f"Plaid unreachable: {exc}") from exc
+
+    return {"link_token": data["link_token"], "expiration": data["expiration"]}
+
+
 # ── POST /score/plaid/exchange ────────────────────────────────────────────────
 
 class PlaidExchangeRequest(BaseModel):
@@ -344,26 +425,31 @@ async def sign_update_score(body: SignUpdateScoreRequest):
 
     This ensures update_score can only succeed when the score came from the engine.
     """
-    # Re-derive the expected score for this wallet to validate the claim
+    # Re-derive the expected score for this wallet to validate the claim.
+    # For sandbox/live wallets, use the in-memory cache populated by GET /score;
+    # fall back to random only if the wallet was never scored this session.
     mode = resolve_score_mode(body.wallet)
     try:
-        if mode == "mock":
-            profile = _load_mock_profile(body.wallet)
-        elif mode == "random":
-            profile = _build_random_profile(body.wallet)
+        if body.wallet in _score_cache:
+            expected_score = _score_cache[body.wallet]
         else:
-            # sandbox/live: trust the claimed score for signing — full re-fetch is too slow here.
-            # In production, cache the score result from GET /score and validate against the cache.
-            profile = _build_random_profile(body.wallet)
-
-        macro = await get_macro_indicators()
-        result = compute_score(profile, macro)
-        score_response = build_score_response(result, macro["fed_funds_upper_bps"])
-        expected_score = score_response.score
+            if mode == "mock":
+                profile = _load_mock_profile(body.wallet)
+            else:
+                profile = _build_random_profile(body.wallet)
+            macro = await get_macro_indicators()
+            result = compute_score(profile, macro)
+            score_response = build_score_response(result, macro["fed_funds_upper_bps"])
+            expected_score = score_response["score"]
     except Exception as exc:
         raise HTTPException(status_code=500, detail=f"Score re-derivation failed: {exc}") from exc
 
-    if body.new_score != expected_score:
+    payment_deltas = {0, 20, 30, -20, -50}
+    # Deposit bonus: +15 per deposit; allow up to 10 consecutive deposits above engine score
+    deposit_bonuses = {15 * n for n in range(1, 11)}
+    all_deltas = payment_deltas | deposit_bonuses
+    allowed = {max(0, min(1000, expected_score + d)) for d in all_deltas}
+    if body.new_score not in allowed:
         raise HTTPException(
             status_code=422,
             detail=f"Score mismatch: claimed {body.new_score}, engine computed {expected_score}",

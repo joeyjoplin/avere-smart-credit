@@ -10,7 +10,9 @@ import HomeScreen from "./pages/HomeScreen";
 import Dashboard from "./pages/Dashboard";
 import LoanFlow from "./pages/LoanFlow";
 import Earn from "./pages/Earn";
+import Payments from "./pages/Payments";
 import DepositScreen from "./pages/DepositScreen";
+import Onboarding from "./pages/Onboarding";
 import NotFound from "./pages/NotFound";
 
 const queryClient = new QueryClient();
@@ -32,10 +34,12 @@ const App = () => (
           <Routes>
             <Route path="/" element={<Index />} />
             <Route path="/home" element={<HomeScreen />} />
+            <Route path="/onboarding" element={<RequireWallet><Onboarding /></RequireWallet>} />
             <Route path="/deposit" element={<RequireWallet><DepositScreen /></RequireWallet>} />
             <Route path="/dashboard" element={<RequireWallet><Dashboard /></RequireWallet>} />
             <Route path="/loan" element={<RequireWallet><LoanFlow /></RequireWallet>} />
             <Route path="/earn" element={<RequireWallet><Earn /></RequireWallet>} />
+            <Route path="/payments" element={<RequireWallet><Payments /></RequireWallet>} />
             {/* ADD ALL CUSTOM ROUTES ABOVE THE CATCH-ALL "*" ROUTE */}
             <Route path="*" element={<NotFound />} />
           </Routes>

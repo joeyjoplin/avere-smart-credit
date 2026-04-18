@@ -14,7 +14,7 @@ import { Transaction, PublicKey } from "@solana/web3.js";
 import { useProgram } from "@/hooks/useProgram";
 import { useVault } from "@/hooks/useVault";
 import { useScore } from "@/hooks/useScore";
-import { fetchOraclePubkey, requestOracleSignature } from "@/lib/score-api";
+import { fetchOraclePubkey, requestOracleSignature, fetchScore } from "@/lib/score-api";
 import {
   connection,
   deriveVaultPDA,
@@ -119,21 +119,25 @@ const Earn = () => {
       const rebalanceSig = await sendTransaction(rebalanceTx, connection);
       await connection.confirmTransaction(rebalanceSig, "confirmed");
 
-      // update_score +15
-      const currentScore = vault?.score ?? 0;
-      const newScore = Math.min(1000, currentScore + 15);
+      // update_score +15 — use current on-chain score so each deposit actually increments
+      await fetchScore(publicKey!.toBase58()); // populates oracle _score_cache
+      const currentOnChainScore = vault?.score ?? scoreData?.score ?? 0;
+      const newScore = Math.min(1000, currentOnChainScore + 15);
       const oraclePubkey = await fetchOraclePubkey();
       const scoreTx = await program.methods
         .updateScore(newScore)
         .accounts({ scoreAuthority: oraclePubkey })
         .transaction();
+      const { blockhash, lastValidBlockHeight } = await connection.getLatestBlockhash();
+      scoreTx.recentBlockhash = blockhash;
+      scoreTx.feePayer = publicKey!;
       const oracleSignedTx = await requestOracleSignature(
         publicKey!.toBase58(),
         newScore,
         scoreTx
       );
       const scoreSig = await sendTransaction(oracleSignedTx, connection);
-      await connection.confirmTransaction(scoreSig, "confirmed");
+      await connection.confirmTransaction({ signature: scoreSig, blockhash, lastValidBlockHeight }, "confirmed");
 
       toast({ title: "Deposit successful!", description: `${fmt(amount)} deposited · Score +15 pts` });
       setDepositAmount("");

@@ -1,6 +1,6 @@
-import { useState, useEffect } from "react";
+import { useState, useEffect, useCallback } from "react";
 import { motion, AnimatePresence } from "framer-motion";
-import { ArrowLeft, Check, Wallet, Percent, Calculator, FileText, Loader2 } from "lucide-react";
+import { ArrowLeft, Check, Wallet, Percent, Calculator, FileText, Loader2, Building2 } from "lucide-react";
 import { useNavigate } from "react-router-dom";
 import { useWallet } from "@solana/wallet-adapter-react";
 import {
@@ -11,6 +11,7 @@ import {
 } from "@solana/spl-token";
 import { Transaction, PublicKey } from "@solana/web3.js";
 import { BN } from "@coral-xyz/anchor";
+import { usePlaidLink } from "react-plaid-link";
 import MobileLayout from "@/components/layout/MobileLayout";
 import { Button } from "@/components/ui/button";
 import { Switch } from "@/components/ui/switch";
@@ -19,7 +20,9 @@ import { toast } from "@/hooks/use-toast";
 import { useProgram } from "@/hooks/useProgram";
 import { useVault } from "@/hooks/useVault";
 import { useScore } from "@/hooks/useScore";
-import { fetchInstallments } from "@/lib/score-api";
+import { usePlaidToken } from "@/hooks/usePlaidToken";
+import { useQueryClient } from "@tanstack/react-query";
+import { fetchInstallments, fetchPlaidLinkToken, exchangePlaidToken } from "@/lib/score-api";
 import type { InstallmentsResponse } from "@/lib/score-api";
 import {
   connection,
@@ -32,6 +35,7 @@ import {
   fromUsdc,
   TOKEN_PROGRAM_ID as TPK,
 } from "@/lib/solana";
+import { appendHistory } from "@/lib/txHistory";
 
 const INSTALLMENT_OPTIONS = [3, 6, 12];
 
@@ -43,7 +47,10 @@ export default function LoanFlow() {
   const { publicKey, sendTransaction } = useWallet();
   const program = useProgram();
   const { data: vault, refetch: refetchVault } = useVault();
+  const walletStr = publicKey?.toBase58() ?? null;
+  const { token: plaidToken, setToken: setPlaidToken } = usePlaidToken(walletStr);
   const { data: scoreData } = useScore();
+  const queryClient = useQueryClient();
 
   const [step, setStep] = useState(1);
   const [loanAmount, setLoanAmount] = useState(3);
@@ -55,6 +62,56 @@ export default function LoanFlow() {
   const [loadingSchedule, setLoadingSchedule] = useState(false);
   const [submitting, setSubmitting] = useState(false);
 
+  // Plaid Link setup
+  const [plaidLinkToken, setPlaidLinkToken] = useState<string | null>(null);
+  const [fetchingLinkToken, setFetchingLinkToken] = useState(false);
+
+  const onPlaidSuccess = useCallback(
+    async (publicToken: string) => {
+      try {
+        const accessToken = await exchangePlaidToken(publicToken);
+        setPlaidToken(accessToken);
+        await queryClient.invalidateQueries({ queryKey: ["score", walletStr] });
+        toast({ title: "Bank linked!", description: "Fetching your real credit score…" });
+      } catch (err: unknown) {
+        toast({
+          title: "Bank link failed",
+          description: err instanceof Error ? err.message : "Token exchange error",
+          variant: "destructive",
+        });
+      }
+    },
+    [walletStr, setPlaidToken, queryClient]
+  );
+
+  const { open: openPlaidLink, ready: plaidReady } = usePlaidLink({
+    token: plaidLinkToken,
+    onSuccess: onPlaidSuccess,
+  });
+
+  async function startPlaidLink() {
+    if (!walletStr) return;
+    if (plaidLinkToken && plaidReady) { openPlaidLink(); return; }
+    setFetchingLinkToken(true);
+    try {
+      const token = await fetchPlaidLinkToken(walletStr);
+      setPlaidLinkToken(token);
+    } catch (err: unknown) {
+      toast({
+        title: "Could not open bank link",
+        description: err instanceof Error ? err.message : "Score engine unreachable",
+        variant: "destructive",
+      });
+    } finally {
+      setFetchingLinkToken(false);
+    }
+  }
+
+  // Auto-open Plaid after link token arrives
+  useEffect(() => {
+    if (plaidLinkToken && plaidReady) openPlaidLink();
+  }, [plaidLinkToken, plaidReady, openPlaidLink]);
+
   // Derived from score engine response
   const maxLoanUsdc = scoreData?.max_loan_usdc ?? 50_000 * 1e6;
   const minLoanUsdc = scoreData?.min_loan_usdc ?? 50 * 1e6;
@@ -64,12 +121,11 @@ export default function LoanFlow() {
   const scoreTier = scoreData?.tier ?? vault?.scoreTier ?? "D";
   const usdcFreeDisplay = vault?.usdcFree ?? 0;
 
-  // Guard: redirect to Deposit if vault doesn't exist (new user) or tier is D
+  // Redirect if vault missing — but don't redirect for tier D anymore (show Plaid gate instead)
   useEffect(() => {
-    if (vault === undefined) return; // still loading — don't redirect prematurely
-    if (!vault.exists) { navigate("/deposit"); return; }
-    if (scoreData?.tier === "D") navigate("/deposit");
-  }, [vault, scoreData, navigate]);
+    if (vault === undefined) return;
+    if (!vault.exists) navigate("/deposit");
+  }, [vault, navigate]);
 
   // Recalculate schedule whenever collateral or term changes
   useEffect(() => {
@@ -166,6 +222,12 @@ export default function LoanFlow() {
       const disburseSig = await sendTransaction(disburseTx, connection);
       await connection.confirmTransaction(disburseSig, "confirmed");
 
+      appendHistory(publicKey.toBase58(), {
+        type: "loan",
+        amount: loanAmount,
+        timestamp: Date.now(),
+      });
+
       toast({
         title: "Loan approved & disbursed!",
         description: `${fmt(loanAmount)} sent to your wallet · ${schedule.blended_rate_bps / 100}% APR`,
@@ -188,6 +250,9 @@ export default function LoanFlow() {
   const handleNext = () => { if (step < 5) setStep(step + 1); };
   const handleBack = () => { if (step > 1) setStep(step - 1); };
 
+  // Show Plaid gate when score engine is in sandbox mode and no token yet
+  const needsPlaid = !plaidToken && scoreData?.tier === "D";
+
   const stepVariants = {
     enter: { opacity: 0, x: 20 },
     center: { opacity: 1, x: 0 },
@@ -197,6 +262,55 @@ export default function LoanFlow() {
   const blendedRateApr = schedule ? schedule.blended_rate_bps / 100 : baseRateBps / 100;
   const monthlyPaymentDisplay = schedule ? fromUsdc(schedule.monthly_payment_usdc) : 0;
   const totalRepayDisplay = schedule ? fromUsdc(schedule.total_cost_usdc) : 0;
+
+  if (needsPlaid) {
+    return (
+      <MobileLayout showNav={false}>
+        <div className="flex h-full flex-col items-center justify-center px-8">
+          <motion.div
+            initial={{ opacity: 0, y: 16 }}
+            animate={{ opacity: 1, y: 0 }}
+            transition={{ duration: 0.4 }}
+            className="flex flex-col items-center gap-6 text-center"
+          >
+            <div className="flex h-20 w-20 items-center justify-center rounded-2xl bg-accent/10">
+              <Building2 className="h-10 w-10 text-accent" />
+            </div>
+            <div>
+              <h2 className="text-2xl font-bold text-foreground">Verify your income</h2>
+              <p className="mt-2 text-muted-foreground">
+                Connect your bank to verify gig income (Uber, DoorDash, Upwork, Fiverr) and unlock your credit score.
+              </p>
+            </div>
+            <div className="w-full space-y-3">
+              <Button
+                variant="accent"
+                size="lg"
+                className="w-full"
+                onClick={startPlaidLink}
+                disabled={fetchingLinkToken}
+              >
+                {fetchingLinkToken ? (
+                  <><Loader2 className="mr-2 h-5 w-5 animate-spin" /> Connecting…</>
+                ) : (
+                  <><Building2 className="mr-2 h-5 w-5" /> Connect Bank Account</>
+                )}
+              </Button>
+              <button
+                onClick={() => navigate("/dashboard")}
+                className="text-sm text-muted-foreground underline-offset-2 hover:underline"
+              >
+                Back to dashboard
+              </button>
+            </div>
+            <p className="text-xs text-muted-foreground/60">
+              Powered by Plaid · Bank-grade security · Read-only access
+            </p>
+          </motion.div>
+        </div>
+      </MobileLayout>
+    );
+  }
 
   return (
     <MobileLayout showNav={false}>
@@ -246,9 +360,13 @@ export default function LoanFlow() {
                     Score {scoreData?.score ?? vault?.score ?? 0} · Base rate {(baseRateBps / 100).toFixed(2)}% APR
                   </p>
                 </div>
-                <div className="rounded-xl bg-card p-4 shadow-soft">
+                <div className="rounded-xl bg-card p-4 shadow-soft space-y-3">
+                  <div className="flex items-center gap-2">
+                    <span className="flex h-5 w-5 items-center justify-center rounded-full bg-green-500/15 text-green-600 text-xs font-bold">✓</span>
+                    <span className="text-sm font-medium text-foreground">Gig income verified via Argyle</span>
+                  </div>
                   <p className="text-sm text-muted-foreground">
-                    Your score qualifies you for Tier {scoreTier} credit. Add USDC collateral from your vault to get a lower blended rate.
+                    Uber, DoorDash, Upwork, and Fiverr earnings count toward your score. Add USDC collateral to get a lower blended rate.
                   </p>
                 </div>
               </motion.div>

@@ -1,6 +1,7 @@
 import { useState } from "react";
 import { motion } from "framer-motion";
-import { Calendar, TrendingUp, AlertCircle, Loader2 } from "lucide-react";
+import { Calendar, TrendingUp, AlertCircle, Loader2, Copy, Check, ArrowDownLeft, Banknote, CheckCircle2 } from "lucide-react";
+import { loadHistory, relativeTime, type TxEvent } from "@/lib/txHistory";
 import MobileLayout from "@/components/layout/MobileLayout";
 import SummaryCard from "@/components/cards/SummaryCard";
 import StatRow from "@/components/cards/StatRow";
@@ -19,7 +20,7 @@ import { useProgram } from "@/hooks/useProgram";
 import { useVault } from "@/hooks/useVault";
 import { useActiveLoan } from "@/hooks/useActiveLoan";
 import { useScore } from "@/hooks/useScore";
-import { fetchOraclePubkey, requestOracleSignature } from "@/lib/score-api";
+import { fetchOraclePubkey, requestOracleSignature, fetchScore } from "@/lib/score-api";
 import {
   connection,
   deriveVaultPDA,
@@ -35,6 +36,39 @@ import { toast } from "@/hooks/use-toast";
 const fmt = (v: number) =>
   new Intl.NumberFormat("en-US", { style: "currency", currency: "USD", minimumFractionDigits: 2 }).format(v);
 
+function ActivityRow({ event }: { event: TxEvent }) {
+  const icons = {
+    deposit: <ArrowDownLeft className="h-4 w-4 text-green-600" />,
+    loan:    <Banknote className="h-4 w-4 text-accent" />,
+    payment: <CheckCircle2 className="h-4 w-4 text-accent" />,
+  };
+  const labels = { deposit: "Deposit", loan: "Loan disbursed", payment: "Payment" };
+
+  return (
+    <div className="flex items-center justify-between rounded-xl bg-card px-4 py-3 shadow-soft">
+      <div className="flex items-center gap-3">
+        <div className="flex h-8 w-8 items-center justify-center rounded-full bg-secondary">
+          {icons[event.type]}
+        </div>
+        <div>
+          <p className="text-sm font-medium text-foreground">{labels[event.type]}</p>
+          <p className="text-xs text-muted-foreground">{relativeTime(event.timestamp)}</p>
+        </div>
+      </div>
+      <div className="text-right">
+        {event.amount !== undefined && (
+          <p className="font-financial text-sm font-semibold text-foreground">{fmt(event.amount)}</p>
+        )}
+        {event.scoreDelta !== undefined && (
+          <p className={`text-xs font-semibold ${event.scoreDelta >= 0 ? "text-accent" : "text-destructive"}`}>
+            {event.scoreDelta >= 0 ? "+" : ""}{event.scoreDelta} pts
+          </p>
+        )}
+      </div>
+    </div>
+  );
+}
+
 function daysUntil(ts: number): number {
   const now = Date.now() / 1000;
   return Math.max(0, Math.round((ts - now) / 86400));
@@ -48,8 +82,17 @@ const Dashboard = () => {
   const { data: loan, refetch: refetchLoan } = useActiveLoan();
   const { data: scoreData } = useScore();
   const [paying, setPaying] = useState(false);
+  const [copied, setCopied] = useState(false);
+
+  const copyAddress = () => {
+    if (!publicKey) return;
+    navigator.clipboard.writeText(publicKey.toBase58());
+    setCopied(true);
+    setTimeout(() => setCopied(false), 2000);
+  };
 
   const displayScore = vault?.score ?? scoreData?.score ?? 0;
+  const history = publicKey ? loadHistory(publicKey.toBase58()) : [];
 
   // Next unpaid installment
   const nextInst = loan?.installments?.find((i) => !i.paid);
@@ -108,19 +151,31 @@ const Dashboard = () => {
       else if (now - dueTs < 7 * 86400) delta = -20; // late ≤7d
       else delta = -50;                         // late >7d
 
-      const newScore = Math.max(0, Math.min(1000, currentScore + delta));
+      const engineScore = await fetchScore(publicKey!.toBase58());
+      const newScore = Math.max(0, Math.min(1000, engineScore.score + delta));
       const oraclePubkey = await fetchOraclePubkey();
       const scoreTx = await program.methods
         .updateScore(newScore)
         .accounts({ scoreAuthority: oraclePubkey })
         .transaction();
+      const { blockhash, lastValidBlockHeight } = await connection.getLatestBlockhash();
+      scoreTx.recentBlockhash = blockhash;
+      scoreTx.feePayer = publicKey!;
       const oracleSignedTx = await requestOracleSignature(
         publicKey!.toBase58(),
         newScore,
         scoreTx
       );
       const scoreSig = await sendTransaction(oracleSignedTx, connection);
-      await connection.confirmTransaction(scoreSig, "confirmed");
+      await connection.confirmTransaction({ signature: scoreSig, blockhash, lastValidBlockHeight }, "confirmed");
+
+      appendHistory(publicKey.toBase58(), {
+        type: "payment",
+        amount: nextInst.amountUsdc,
+        scoreDelta: delta,
+        newScore,
+        timestamp: Date.now(),
+      });
 
       toast({
         title: "Payment made!",
@@ -163,11 +218,27 @@ const Dashboard = () => {
         >
           <p className="text-sm text-muted-foreground">Welcome back</p>
           <h1 className="text-2xl font-bold text-foreground">Your Loan Overview</h1>
+          {publicKey && (
+            <button
+              onClick={copyAddress}
+              className="mt-1 flex items-center gap-1.5 text-xs text-muted-foreground hover:text-foreground transition-colors"
+            >
+              <span className="font-mono">
+                {publicKey.toBase58().slice(0, 4)}…{publicKey.toBase58().slice(-4)}
+              </span>
+              {copied ? <Check className="h-3 w-3 text-accent" /> : <Copy className="h-3 w-3" />}
+            </button>
+          )}
         </motion.div>
 
         {/* Credit Score Card */}
         <div className="mb-4">
-          <ScoreCard score={displayScore} delay={0.05} />
+          <ScoreCard
+            score={displayScore}
+            tier={vault?.scoreTier ?? scoreData?.tier}
+            breakdown={scoreData?.breakdown}
+            delay={0.05}
+          />
         </div>
 
         {loan?.exists ? (
@@ -337,7 +408,7 @@ const Dashboard = () => {
           initial={{ opacity: 0 }}
           animate={{ opacity: 1 }}
           transition={{ duration: 0.4, delay: 0.6 }}
-          className="mb-8 mt-6 flex items-start gap-3 rounded-xl bg-avere-50 p-4"
+          className="mt-6 flex items-start gap-3 rounded-xl bg-avere-50 p-4"
         >
           <AlertCircle className="mt-0.5 h-5 w-5 flex-shrink-0 text-avere-600" />
           <div>
@@ -347,6 +418,23 @@ const Dashboard = () => {
             </p>
           </div>
         </motion.div>
+
+        {/* Recent Activity */}
+        {history.length > 0 && (
+          <motion.div
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
+            transition={{ duration: 0.4, delay: 0.7 }}
+            className="mt-6 mb-8"
+          >
+            <h2 className="mb-3 text-sm font-semibold text-foreground">Recent Activity</h2>
+            <div className="space-y-2">
+              {history.slice(0, 5).map((event, i) => (
+                <ActivityRow key={i} event={event} />
+              ))}
+            </div>
+          </motion.div>
+        )}
       </div>
     </MobileLayout>
   );

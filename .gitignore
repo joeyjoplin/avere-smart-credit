@@ -49,3 +49,5 @@ scripts/keypairs/maria-keypair.json
 smartcontracts/scripts/create_test_usdc.ts
 smartcontracts/scripts/setup_devnet.ts
 smartcontracts/scripts/test-usdc-mint.json
+HACKATHON_TASKS.md
+

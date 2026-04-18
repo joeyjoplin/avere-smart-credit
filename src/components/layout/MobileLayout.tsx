@@ -18,6 +18,11 @@ const MobileLayout = ({
 }: MobileLayoutProps) => {
   return (
     <div className="relative mx-auto h-full w-full max-w-[430px] overflow-hidden bg-background">
+      <div className="flex items-center justify-center gap-1.5 bg-amber-500/10 px-3 py-1 text-xs font-medium text-amber-700">
+        <span>Devnet demo</span>
+        <span className="opacity-50">·</span>
+        <span>Loan amounts capped at $10</span>
+      </div>
       {showBalanceBar && <WalletBalanceBar />}
       <motion.main
         initial={{ opacity: 0 }}

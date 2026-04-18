@@ -1,6 +1,6 @@
 import { useState } from "react";
-import { motion } from "framer-motion";
-import { ArrowLeft, Coins, Info, Loader2 } from "lucide-react";
+import { motion, AnimatePresence } from "framer-motion";
+import { ArrowLeft, Coins, Info, Loader2, CheckCircle2, Circle } from "lucide-react";
 import { useNavigate } from "react-router-dom";
 import { useWallet } from "@solana/wallet-adapter-react";
 import { PublicKey } from "@solana/web3.js";
@@ -10,7 +10,6 @@ import {
   TOKEN_PROGRAM_ID,
   ASSOCIATED_TOKEN_PROGRAM_ID,
 } from "@solana/spl-token";
-import { BN } from "@coral-xyz/anchor";
 import { Transaction } from "@solana/web3.js";
 import MobileLayout from "@/components/layout/MobileLayout";
 import { Button } from "@/components/ui/button";
@@ -24,15 +23,20 @@ import {
   deriveVaultPDA,
   deriveBankPoolPDA,
   USDC_MINT,
-  ownerUsdcAta,
-  vaultUsdcAta,
   toUsdc,
-  fromUsdc,
   TOKEN_PROGRAM_ID as TPK,
 } from "@/lib/solana";
+import { appendHistory } from "@/lib/txHistory";
 
-const MIN_DEPOSIT = 1;     // $1 minimum — devnet faucet amounts
+const MIN_DEPOSIT = 1;
 const MAX_DEPOSIT = 500;
+
+const PHASES = [
+  "Preparing vault",
+  "Transferring USDC",
+  "Activating yield",
+  "Updating score",
+] as const;
 
 const fmt = (v: number) =>
   new Intl.NumberFormat("en-US", { style: "currency", currency: "USD", minimumFractionDigits: 2 }).format(v);
@@ -46,89 +50,80 @@ export default function DepositScreen() {
 
   const [amount, setAmount] = useState("");
   const [loading, setLoading] = useState(false);
+  const [phase, setPhase] = useState(-1); // -1 = idle, 0-3 = active phase index
 
   const amountNum = parseFloat(amount) || 0;
   const isValid = amountNum >= MIN_DEPOSIT && amountNum <= MAX_DEPOSIT;
 
-  async function ensureAta(owner: PublicKey, mint: PublicKey): Promise<PublicKey> {
-    const ata = getAssociatedTokenAddressSync(mint, owner, false);
-    const info = await connection.getAccountInfo(ata);
-    if (!info) {
-      const tx = new Transaction().add(
-        createAssociatedTokenAccountInstruction(
-          publicKey!,
-          ata,
-          owner,
-          mint,
-          TOKEN_PROGRAM_ID,
-          ASSOCIATED_TOKEN_PROGRAM_ID
-        )
-      );
-      const sig = await sendTransaction(tx, connection);
-      await connection.confirmTransaction(sig, "confirmed");
-    }
-    return ata;
-  }
-
-  async function ensureVaultAta(vaultPDA: PublicKey): Promise<PublicKey> {
-    const ata = getAssociatedTokenAddressSync(USDC_MINT, vaultPDA, true);
-    const info = await connection.getAccountInfo(ata);
-    if (!info) {
-      const tx = new Transaction().add(
-        createAssociatedTokenAccountInstruction(
-          publicKey!,
-          ata,
-          vaultPDA,
-          USDC_MINT,
-          TOKEN_PROGRAM_ID,
-          ASSOCIATED_TOKEN_PROGRAM_ID
-        )
-      );
-      const sig = await sendTransaction(tx, connection);
-      await connection.confirmTransaction(sig, "confirmed");
-    }
-    return ata;
+  async function sendAndConfirm(tx: Transaction): Promise<void> {
+    const sig = await sendTransaction(tx, connection);
+    await connection.confirmTransaction(sig, "confirmed");
   }
 
   async function handleDeposit() {
     if (!publicKey || !program || !isValid) return;
     setLoading(true);
+    setPhase(0);
 
     try {
+      const solBalance = await connection.getBalance(publicKey);
+      if (solBalance < 5_000_000) {
+        throw new Error(
+          "Your wallet needs devnet SOL to pay transaction fees. " +
+          "Run: solana airdrop 2 " + publicKey.toBase58() + " --url devnet"
+        );
+      }
+
       const [vaultPDA] = deriveVaultPDA(publicKey);
       const amountBN = toUsdc(amountNum);
-
-      // 1. Initialize BankPool if it doesn't exist (program-wide, first deposit ever)
       const [bankPoolPDA] = deriveBankPoolPDA();
-      const bankPoolInfo = await connection.getAccountInfo(bankPoolPDA);
+
+      // Phase 0: Preparing vault — check all accounts in one parallel batch
+      const userAtaAddr = getAssociatedTokenAddressSync(USDC_MINT, publicKey, false);
+      const vaultAtaAddr = getAssociatedTokenAddressSync(USDC_MINT, vaultPDA, true);
+      const [bankPoolInfo, userAtaInfo, vaultAtaInfo] = await connection.getMultipleAccountsInfo([
+        bankPoolPDA, userAtaAddr, vaultAtaAddr,
+      ]);
+
+      // Init bankPool + vault in parallel (independent of each other)
+      const initRound1: Promise<void>[] = [];
       if (!bankPoolInfo) {
-        const tx = await program.methods
-          .initializeBankPool()
-          .accounts({})
-          .transaction();
-        const sig = await sendTransaction(tx, connection);
-        await connection.confirmTransaction(sig, "confirmed");
+        initRound1.push(
+          program.methods.initializeBankPool().accounts({}).transaction().then(sendAndConfirm)
+        );
       }
-
-      // 2. Initialize vault if it doesn't exist (per-user onboarding)
       if (!vault?.exists) {
-        const tx = await program.methods
-          .initializeVault()
-          .accounts({})
-          .transaction();
-        const sig = await sendTransaction(tx, connection);
-        await connection.confirmTransaction(sig, "confirmed");
-        toast({ title: "Vault created", description: "Your Avere vault is ready." });
+        initRound1.push(
+          program.methods.initializeVault().accounts({}).transaction().then(sendAndConfirm)
+        );
       }
+      if (initRound1.length > 0) await Promise.all(initRound1);
 
-      // 3. Ensure user USDC ATA exists
-      const userAta = await ensureAta(publicKey, USDC_MINT);
+      // Create ATAs in parallel (independent of each other)
+      const initRound2: Promise<void>[] = [];
+      if (!userAtaInfo) {
+        const tx = new Transaction().add(
+          createAssociatedTokenAccountInstruction(
+            publicKey, userAtaAddr, publicKey, USDC_MINT, TOKEN_PROGRAM_ID, ASSOCIATED_TOKEN_PROGRAM_ID
+          )
+        );
+        initRound2.push(sendAndConfirm(tx));
+      }
+      if (!vaultAtaInfo) {
+        const tx = new Transaction().add(
+          createAssociatedTokenAccountInstruction(
+            publicKey, vaultAtaAddr, vaultPDA, USDC_MINT, TOKEN_PROGRAM_ID, ASSOCIATED_TOKEN_PROGRAM_ID
+          )
+        );
+        initRound2.push(sendAndConfirm(tx));
+      }
+      if (initRound2.length > 0) await Promise.all(initRound2);
 
-      // 4. Ensure vault USDC ATA exists
-      const vaultAta = await ensureVaultAta(vaultPDA);
+      const userAta = userAtaAddr;
+      const vaultAta = vaultAtaAddr;
 
-      // 5. Deposit USDC
-      // Note: `owner` is auto-resolved by Anchor via relations: ["vault"] — do not pass explicitly
+      // Phase 1: Transferring USDC
+      setPhase(1);
       const depositTx = await program.methods
         .depositUsdc(amountBN)
         .accounts({
@@ -141,15 +136,14 @@ export default function DepositScreen() {
       const depositSig = await sendTransaction(depositTx, connection);
       await connection.confirmTransaction(depositSig, "confirmed");
 
-      // 6. Rebalance yield (stub on devnet — no-op on localnet, sends to Kamino on mainnet)
-      const rebalanceTx = await program.methods
-        .rebalanceYield()
-        .accounts({})
-        .transaction();
+      // Phase 2: Activating yield
+      setPhase(2);
+      const rebalanceTx = await program.methods.rebalanceYield().accounts({}).transaction();
       const rebalanceSig = await sendTransaction(rebalanceTx, connection);
       await connection.confirmTransaction(rebalanceSig, "confirmed");
 
-      // 7. Update score +15 (earn deposit delta)
+      // Phase 3: Updating score
+      setPhase(3);
       const currentScore = scoreData?.score ?? vault?.score ?? 0;
       const newScore = Math.min(1000, currentScore + 15);
       const oraclePubkey = await fetchOraclePubkey();
@@ -157,13 +151,20 @@ export default function DepositScreen() {
         .updateScore(newScore)
         .accounts({ scoreAuthority: oraclePubkey })
         .transaction();
-      const oracleSignedTx = await requestOracleSignature(
-        publicKey!.toBase58(),
-        newScore,
-        scoreTx
-      );
+      const { blockhash, lastValidBlockHeight } = await connection.getLatestBlockhash();
+      scoreTx.recentBlockhash = blockhash;
+      scoreTx.feePayer = publicKey!;
+      const oracleSignedTx = await requestOracleSignature(publicKey!.toBase58(), newScore, scoreTx);
       const scoreSig = await sendTransaction(oracleSignedTx, connection);
-      await connection.confirmTransaction(scoreSig, "confirmed");
+      await connection.confirmTransaction({ signature: scoreSig, blockhash, lastValidBlockHeight }, "confirmed");
+
+      appendHistory(publicKey.toBase58(), {
+        type: "deposit",
+        amount: amountNum,
+        scoreDelta: 15,
+        newScore: Math.min(1000, (scoreData?.score ?? vault?.score ?? 0) + 15),
+        timestamp: Date.now(),
+      });
 
       toast({
         title: "Deposit successful!",
@@ -173,7 +174,7 @@ export default function DepositScreen() {
       await refetchVault();
       navigate("/dashboard");
     } catch (err: unknown) {
-      console.error(err);
+      console.error("Deposit error:", err);
       toast({
         title: "Deposit failed",
         description: err instanceof Error ? err.message : "Transaction error",
@@ -181,6 +182,7 @@ export default function DepositScreen() {
       });
     } finally {
       setLoading(false);
+      setPhase(-1);
     }
   }
 
@@ -247,7 +249,8 @@ export default function DepositScreen() {
               onChange={(e) => setAmount(e.target.value)}
               placeholder="0.00"
               min={MIN_DEPOSIT}
-              className="w-full rounded-xl border border-border bg-secondary/50 py-4 pl-8 pr-4 font-financial text-2xl text-foreground placeholder:text-muted-foreground/40 focus:border-accent focus:outline-none focus:ring-2 focus:ring-accent/20"
+              disabled={loading}
+              className="w-full rounded-xl border border-border bg-secondary/50 py-4 pl-8 pr-4 font-financial text-2xl text-foreground placeholder:text-muted-foreground/40 focus:border-accent focus:outline-none focus:ring-2 focus:ring-accent/20 disabled:opacity-50"
             />
           </div>
           <p className="mt-2 text-xs text-muted-foreground">Minimum {fmt(MIN_DEPOSIT)}</p>
@@ -270,6 +273,49 @@ export default function DepositScreen() {
 
         <div className="flex-1" />
 
+        {/* Transaction progress */}
+        <AnimatePresence>
+          {loading && (
+            <motion.div
+              initial={{ opacity: 0, y: 8, height: 0 }}
+              animate={{ opacity: 1, y: 0, height: "auto" }}
+              exit={{ opacity: 0, y: 8, height: 0 }}
+              transition={{ duration: 0.25 }}
+              className="mb-4 overflow-hidden rounded-2xl border border-border bg-card p-4 shadow-soft"
+            >
+              <p className="mb-3 text-xs font-medium text-muted-foreground">Transaction progress</p>
+              <div className="space-y-2.5">
+                {PHASES.map((label, i) => {
+                  const done = i < phase;
+                  const active = i === phase;
+                  return (
+                    <div key={label} className="flex items-center gap-3">
+                      {done ? (
+                        <CheckCircle2 className="h-4 w-4 flex-shrink-0 text-accent" />
+                      ) : active ? (
+                        <Loader2 className="h-4 w-4 flex-shrink-0 animate-spin text-accent" />
+                      ) : (
+                        <Circle className="h-4 w-4 flex-shrink-0 text-muted-foreground/30" />
+                      )}
+                      <span
+                        className={`text-sm ${
+                          done
+                            ? "text-accent line-through"
+                            : active
+                            ? "font-medium text-foreground"
+                            : "text-muted-foreground/50"
+                        }`}
+                      >
+                        {label}
+                      </span>
+                    </div>
+                  );
+                })}
+              </div>
+            </motion.div>
+          )}
+        </AnimatePresence>
+
         {/* CTA */}
         <motion.div
           initial={{ opacity: 0, y: 16 }}
@@ -285,12 +331,9 @@ export default function DepositScreen() {
             onClick={handleDeposit}
           >
             {loading ? (
-              <><Loader2 className="mr-2 h-5 w-5 animate-spin" /> Depositing…</>
+              <><Loader2 className="mr-2 h-5 w-5 animate-spin" /> {PHASES[phase] ?? "Processing…"}</>
             ) : (
-              <>
-                <Coins className="mr-2 h-5 w-5" />
-                Deposit {isValid ? fmt(amountNum) : "USDC"}
-              </>
+              <><Coins className="mr-2 h-5 w-5" /> Deposit {isValid ? fmt(amountNum) : "USDC"}</>
             )}
           </Button>
           {!publicKey && (
