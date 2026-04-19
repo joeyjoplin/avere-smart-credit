@@ -1,13 +1,13 @@
 import { useLocation, useNavigate } from "react-router-dom";
 import { motion } from "framer-motion";
-import { LayoutDashboard, Wallet, TrendingUp, CreditCard, Link2 } from "lucide-react";
+import { LayoutDashboard, Banknote, TrendingUp, CreditCard, Link2 } from "lucide-react";
 
 const navItems = [
-  { path: "/dashboard", icon: LayoutDashboard, label: "Dashboard" },
-  { path: "/loan", icon: Wallet, label: "Loan" },
+  { path: "/dashboard", icon: LayoutDashboard, label: "Home" },
+  { path: "/loans", icon: Banknote, label: "Loans" },
   { path: "/payments", icon: CreditCard, label: "Payments" },
-  { path: "/earn", icon: TrendingUp, label: "Earn" },
-  { path: "/connect", icon: Link2, label: "Connect" },
+  { path: "/earn", icon: TrendingUp, label: "Save & Earn" },
+  { path: "/connect", icon: Link2, label: "My Income" },
 ];
 
 const BottomNav = () => {

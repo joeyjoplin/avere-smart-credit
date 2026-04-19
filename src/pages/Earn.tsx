@@ -24,7 +24,6 @@ import {
 } from "@/lib/solana";
 import { toast } from "@/hooks/use-toast";
 
-const KAMINO_APY = 5.8; // Display-only until live Kamino CPI on devnet
 
 const fmt = (v: number) =>
   new Intl.NumberFormat("en-US", { style: "currency", currency: "USD", minimumFractionDigits: 2 }).format(v);
@@ -159,7 +158,7 @@ const Earn = () => {
         {/* Header */}
         <motion.div initial={{ opacity: 0, y: -8 }} animate={{ opacity: 1, y: 0 }} transition={{ duration: 0.4 }} className="mb-6">
           <p className="text-sm text-muted-foreground">Grow your wealth</p>
-          <h1 className="text-2xl font-bold text-foreground">Earn & Build Score</h1>
+          <h1 className="text-2xl font-bold text-foreground">Save & Earn</h1>
         </motion.div>
 
         {/* Score Mini Card */}
@@ -174,7 +173,7 @@ const Earn = () => {
             </div>
           </div>
           <div className="text-right">
-            <p className="text-xs text-primary-foreground/70">Tier</p>
+            <p className="text-xs text-primary-foreground/70">Credit grade</p>
             <p className="text-sm font-semibold text-primary-foreground">{scoreTier}</p>
           </div>
         </motion.div>
@@ -183,8 +182,8 @@ const Earn = () => {
         {vault?.exists && (
           <motion.div initial={{ opacity: 0, y: 16 }} animate={{ opacity: 1, y: 0 }} transition={{ duration: 0.4, delay: 0.15 }} className="mb-6 flex gap-3">
             <div className="flex-1 rounded-xl bg-avere-50 p-3">
-              <p className="text-xs text-muted-foreground">Kamino APY</p>
-              <p className="font-financial text-lg font-bold text-accent">{KAMINO_APY}%</p>
+              <p className="text-xs text-muted-foreground">Yield</p>
+              <p className="font-financial text-sm font-bold text-muted-foreground">Coming soon</p>
             </div>
             <div className="flex-1 rounded-xl bg-avere-50 p-3">
               <p className="text-xs text-muted-foreground">Available</p>
@@ -202,7 +201,7 @@ const Earn = () => {
 
           <div className="rounded-2xl border border-border bg-card p-5 shadow-soft">
             <p className="mb-4 text-sm text-muted-foreground">
-              Deposit stablecoins to earn {KAMINO_APY}% APY via Kamino Lend and get +15 credit score pts.
+              Deposit stablecoins to build your credit score and unlock better loan terms. Kamino yield integration coming soon.
             </p>
 
             <div className="mb-4">
@@ -235,7 +234,7 @@ const Earn = () => {
 
             <p className="mt-3 flex items-start gap-2 text-xs text-muted-foreground">
               <Info className="mt-0.5 h-3 w-3 flex-shrink-0" />
-              Each deposit awards +15 score points and sends free USDC to Kamino.
+              Each deposit awards +15 score points. Kamino yield coming soon.
             </p>
           </div>
         </motion.div>

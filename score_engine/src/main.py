@@ -2,6 +2,7 @@ import base64
 import hashlib
 import json
 import os
+import struct
 import time
 from pathlib import Path
 import httpx
@@ -108,6 +109,7 @@ async def get_score(
     wallet: str = Query(..., description="Solana public key (base58)"),
     plaid_token: str | None = Query(None, description="Plaid access token (required for sandbox/live mode)"),
     argyle_account_id: str | None = Query(None, description="Argyle account ID (optional — gig workers only)"),
+    relationship_months: int = Query(0, ge=0, description="Months since vault creation — drives evolutionary weight shift (0 = new user, 36+ = established)"),
 ):
     """
     Full scoring pipeline. Called once on Loan tab mount; result cached in frontend state.
@@ -170,7 +172,7 @@ async def get_score(
         raise HTTPException(status_code=500, detail=f"Unknown SCORE_MODE: {mode}")
 
     macro  = await get_macro_indicators()
-    result = compute_score(profile, macro)
+    result = compute_score(profile, macro, relationship_months)
     response = build_score_response(result, macro["fed_funds_upper_bps"])
     _score_cache[wallet] = response["score"]
     _breakdown_cache[wallet] = result["breakdown"]
@@ -643,6 +645,186 @@ async def get_score_explain(
             f["direction"] = "neutral"
 
     return data
+
+
+# ── POST /devnet/airdrop-usdc ──────────────────────────────────────────────────
+
+_DEVNET_RPC_URL = os.getenv("SOLANA_RPC_URL", "https://api.devnet.solana.com")
+_FAUCET_USDC_MINT = "4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU"
+_TOKEN_PROGRAM_ID_STR = "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"
+_ATA_PROGRAM_ID_STR = "ATokenGPvbdGVxr1b2hvZbsiqW5xWH25efTNsLJe1bsF"
+_SYSTEM_PROGRAM_STR = "11111111111111111111111111111111"
+_faucet_cooldown: dict[str, float] = {}
+_FAUCET_COOLDOWN_S = 3600.0
+
+
+def _get_faucet_keypair() -> Keypair | None:
+    path_str = os.getenv("FAUCET_KEYPAIR_PATH")
+    if not path_str:
+        return None
+    p = Path(path_str)
+    if not p.exists():
+        return None
+    return Keypair.from_bytes(bytes(json.loads(p.read_text())))
+
+
+def _derive_ata(owner_str: str, mint_str: str) -> str:
+    from solders.pubkey import Pubkey  # type: ignore
+    owner = Pubkey.from_string(owner_str)
+    mint = Pubkey.from_string(mint_str)
+    tok = Pubkey.from_string(_TOKEN_PROGRAM_ID_STR)
+    ata_prog = Pubkey.from_string(_ATA_PROGRAM_ID_STR)
+    seeds = [bytes(owner), bytes(tok), bytes(mint)]
+    ata, _ = Pubkey.find_program_address(seeds, ata_prog)
+    return str(ata)
+
+
+async def _sol_rpc(method: str, params: list) -> dict:
+    async with httpx.AsyncClient(timeout=30.0) as c:
+        r = await c.post(
+            _DEVNET_RPC_URL,
+            json={"jsonrpc": "2.0", "id": 1, "method": method, "params": params},
+        )
+        r.raise_for_status()
+        return r.json()
+
+
+class AirdropRequest(BaseModel):
+    wallet: str = Field(..., description="Recipient wallet pubkey (base58)")
+    amount_usdc: float = Field(10.0, description="Amount to airdrop (max 10 USDC)")
+
+
+class AirdropResponse(BaseModel):
+    signature: str = Field(..., description="Transaction signature")
+    amount_usdc: float = Field(..., description="Amount transferred")
+
+
+@app.post("/devnet/airdrop-usdc", response_model=AirdropResponse)
+async def devnet_airdrop_usdc(body: AirdropRequest):
+    """
+    Transfer test USDC from the score engine faucet wallet to the requesting wallet.
+    Devnet only. Max 10 USDC per request, 1 request per wallet per hour.
+    Requires FAUCET_KEYPAIR_PATH env var pointing to a funded keypair JSON file.
+    """
+    from solders.pubkey import Pubkey  # type: ignore
+    from solders.instruction import Instruction, AccountMeta  # type: ignore
+    from solders.hash import Hash  # type: ignore
+    from solders.transaction import Transaction as LegacyTx  # type: ignore
+
+    faucet = _get_faucet_keypair()
+    if faucet is None:
+        raise HTTPException(status_code=503, detail="Faucet not configured (set FAUCET_KEYPAIR_PATH)")
+
+    now = time.time()
+    last = _faucet_cooldown.get(body.wallet, 0.0)
+    if now - last < _FAUCET_COOLDOWN_S:
+        wait_min = int((_FAUCET_COOLDOWN_S - (now - last)) / 60) + 1
+        raise HTTPException(status_code=429, detail=f"Rate limited. Try again in ~{wait_min} min.")
+
+    amount = min(body.amount_usdc, 10.0)
+    amount_units = int(amount * 1_000_000)  # USDC has 6 decimals
+
+    faucet_pubkey = faucet.pubkey()
+    user_pubkey = Pubkey.from_string(body.wallet)
+    mint = Pubkey.from_string(_FAUCET_USDC_MINT)
+    tok_prog = Pubkey.from_string(_TOKEN_PROGRAM_ID_STR)
+    ata_prog = Pubkey.from_string(_ATA_PROGRAM_ID_STR)
+    sys_prog = Pubkey.from_string(_SYSTEM_PROGRAM_STR)
+
+    faucet_ata = Pubkey.from_string(_derive_ata(str(faucet_pubkey), _FAUCET_USDC_MINT))
+    user_ata = Pubkey.from_string(_derive_ata(body.wallet, _FAUCET_USDC_MINT))
+
+    # Check if user ATA exists; create it if not (faucet pays)
+    ata_info = await _sol_rpc("getAccountInfo", [str(user_ata), {"encoding": "base64"}])
+    user_ata_exists = ata_info.get("result", {}).get("value") is not None
+
+    instructions = []
+    if not user_ata_exists:
+        instructions.append(Instruction(
+            program_id=ata_prog,
+            accounts=[
+                AccountMeta(pubkey=faucet_pubkey, is_signer=True, is_writable=True),
+                AccountMeta(pubkey=user_ata, is_signer=False, is_writable=True),
+                AccountMeta(pubkey=user_pubkey, is_signer=False, is_writable=False),
+                AccountMeta(pubkey=mint, is_signer=False, is_writable=False),
+                AccountMeta(pubkey=sys_prog, is_signer=False, is_writable=False),
+                AccountMeta(pubkey=tok_prog, is_signer=False, is_writable=False),
+            ],
+            data=b"",
+        ))
+
+    # SPL Token Transfer instruction: tag=3, amount=u64 LE
+    transfer_data = bytes([3]) + struct.pack("<Q", amount_units)
+    instructions.append(Instruction(
+        program_id=tok_prog,
+        accounts=[
+            AccountMeta(pubkey=faucet_ata, is_signer=False, is_writable=True),
+            AccountMeta(pubkey=user_ata, is_signer=False, is_writable=True),
+            AccountMeta(pubkey=faucet_pubkey, is_signer=True, is_writable=False),
+        ],
+        data=transfer_data,
+    ))
+
+    bh_result = await _sol_rpc("getLatestBlockhash", [{"commitment": "confirmed"}])
+    blockhash = Hash.from_string(bh_result["result"]["value"]["blockhash"])
+
+    tx = LegacyTx.new_signed_with_payer(instructions, faucet_pubkey, [faucet], blockhash)
+    encoded = base64.b64encode(bytes(tx)).decode()
+
+    send_result = await _sol_rpc(
+        "sendTransaction",
+        [encoded, {"encoding": "base64", "preflightCommitment": "confirmed"}],
+    )
+    if "error" in send_result:
+        raise HTTPException(status_code=502, detail=f"Airdrop failed: {send_result['error']}")
+
+    _faucet_cooldown[body.wallet] = now
+    return {"signature": send_result["result"], "amount_usdc": amount}
+
+
+# ── GET /agents/bank-pool ─────────────────────────────────────────────────────
+
+@app.get("/agents/bank-pool")
+def get_bank_pool_agent(
+    pool_balance_usdc: float = Query(1000.0, description="BankPool balance in USDC (display dollars)"),
+    active_loans: int = Query(0, ge=0, description="Number of currently active loans"),
+):
+    """
+    Agent A (BankPool Manager) allocation decision.
+
+    Returns the optimal allocation of BankPool capital across whitelisted Solana
+    yield protocols given current simulated APY feeds and governance limits:
+      - Max 70% in any single protocol
+      - Min 20% liquid buffer for new loan disbursements
+
+    MVP: deterministic rules (rank by APY, apply caps).
+    Phase 2: LLM-based context-aware rebalancing.
+    """
+    from agents.bank_pool_agent import decide_allocation
+    return decide_allocation(pool_balance_usdc, active_loans)
+
+
+# ── GET /agents/vault ─────────────────────────────────────────────────────────
+
+@app.get("/agents/vault")
+def get_vault_agent(
+    wallet: str = Query(..., description="Vault owner wallet pubkey (base58) — for logging only"),
+    tier: str = Query("B", description="User score tier: A | B | C | D"),
+    free_usdc: float = Query(0.0, ge=0, description="Free USDC in vault (not locked as collateral)"),
+    locked_usdc: float = Query(0.0, ge=0, description="USDC locked as collateral"),
+):
+    """
+    Agent B (Vault Optimizer) allocation decision for a single user vault.
+
+    Risk profile adapts to user tier:
+      - Tier A/B: growth strategy — best eligible protocol by APY
+      - Tier C/D: conservative — Kamino only
+
+    Always maintains 20% liquid buffer for instant withdrawal.
+    """
+    from agents.vault_agent import decide_vault_allocation
+    tier_clean = tier.upper() if tier.upper() in ("A", "B", "C", "D") else "B"
+    return decide_vault_allocation(free_usdc, locked_usdc, tier_clean)
 
 
 # ── GET /health ───────────────────────────────────────────────────────────────

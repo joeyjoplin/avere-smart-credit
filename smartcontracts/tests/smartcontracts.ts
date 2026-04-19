@@ -77,6 +77,23 @@ async function airdrop(
   await connection.confirmTransaction(sig, "confirmed");
 }
 
+/** Retry a spl-token helper (mintTo, createATA) that may fail with
+ *  "Blockhash not found" on a busy localnet validator. */
+async function withRetry<T>(fn: () => Promise<T>, maxAttempts = 3): Promise<T> {
+  for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+    try {
+      return await fn();
+    } catch (err: any) {
+      const isBlockhashErr =
+        err?.message?.includes("Blockhash not found") ||
+        err?.message?.includes("blockhash");
+      if (!isBlockhashErr || attempt === maxAttempts) throw err;
+      await new Promise((r) => setTimeout(r, 800 * attempt));
+    }
+  }
+  throw new Error("unreachable");
+}
+
 /** Create an ATA for an off-curve owner (PDA).
  *  Uses the idempotent variant — newer ATA program versions reject the
  *  non-idempotent Create instruction when the owner is off-curve. */
@@ -212,19 +229,23 @@ describe("avere", () => {
     userUsdcAta:  PublicKey;
     vaultUsdcAta: PublicKey;
   }> {
-    const userUsdcAta = await createAssociatedTokenAccount(
-      conn, user, usdcMint, user.publicKey
+    const userUsdcAta = await withRetry(() =>
+      createAssociatedTokenAccount(conn, user, usdcMint, user.publicKey)
     );
-    await mintTo(conn, mintAuthority, usdcMint, userUsdcAta, mintAuthority, userAmountUsdc);
+    await withRetry(() =>
+      mintTo(conn, mintAuthority, usdcMint, userUsdcAta, mintAuthority, userAmountUsdc)
+    );
 
     // vaultPDA is off-curve → allowOwnerOffCurve = true (8th parameter)
-    const vaultUsdcAta = await createPdaAta(conn, user, usdcMint, vaultPDA);
+    const vaultUsdcAta = await withRetry(() => createPdaAta(conn, user, usdcMint, vaultPDA));
     return { userUsdcAta, vaultUsdcAta };
   }
 
   /** Seed BankPool ATA with USDC for disbursement tests. */
   async function fundBankPool(amount = 10_000_000_000): Promise<void> {
-    await mintTo(conn, mintAuthority, usdcMint, bankPoolUsdcAta, mintAuthority, amount);
+    await withRetry(() =>
+      mintTo(conn, mintAuthority, usdcMint, bankPoolUsdcAta, mintAuthority, amount)
+    );
   }
 
   // ═══════════════════════════════════════════════════════════════════════════
@@ -856,7 +877,9 @@ describe("avere", () => {
       await setScore(810);
       [loanPDA] = deriveLoanTradPDA(vaultPDA, LOAN_ID, program.programId);
 
-      userUsdcAta = await createAssociatedTokenAccount(conn, user, usdcMint, user.publicKey);
+      userUsdcAta = await withRetry(() =>
+        createAssociatedTokenAccount(conn, user, usdcMint, user.publicKey)
+      );
 
       await program.methods
         .approveTraditionalLoan(
@@ -1074,15 +1097,14 @@ describe("avere", () => {
       assert.equal(after.activeLoans, 0, "active_loans must be 0 after full repayment");
     });
 
-    it("increments bank_pool.usdc_available by installment amount on repay", async () => {
-      const before = await program.account.bankPool.fetch(bankPoolPDA);
+    it("increases BankPool ATA balance by installment amount on repay", async () => {
+      const before = (await getAccount(conn, bankPoolUsdcAta)).amount;
       await repay(0);
-      const after = await program.account.bankPool.fetch(bankPoolPDA);
-      assert.ok(
-        new BN(after.usdcAvailable).eq(
-          new BN(before.usdcAvailable).add(new BN(185_000_000))
-        ),
-        "usdc_available must increase by the repaid installment amount"
+      const after = (await getAccount(conn, bankPoolUsdcAta)).amount;
+      assert.equal(
+        after - before,
+        BigInt(185_000_000),
+        "pool ATA must increase by the repaid installment amount"
       );
     });
 
@@ -1219,10 +1241,9 @@ describe("avere", () => {
   describe("initialize_bank_pool", () => {
     // BankPool is initialized in the global before() — we verify the resulting state.
 
-    it("creates BankPool with a valid bump and usdc_available = 0", async () => {
+    it("creates BankPool with a valid bump", async () => {
       const pool = await program.account.bankPool.fetch(bankPoolPDA);
       assert.isAbove(pool.bump, 0, "bump must be a non-zero PDA bump");
-      assert.ok(new BN(pool.usdcAvailable).isZero(), "usdc_available must start at 0");
     });
 
     it("BankPool PDA address is deterministic (only seed is 'bank-pool')", () => {
@@ -1463,44 +1484,184 @@ describe("avere", () => {
   });
 
   // ═══════════════════════════════════════════════════════════════════════════
-  // withdraw — stub (Kamino CPI wired in Phase 5)
+  // withdraw
   // ═══════════════════════════════════════════════════════════════════════════
 
   describe("withdraw", () => {
+    let userUsdcAta:  PublicKey;
+    let vaultUsdcAta: PublicKey;
+
     beforeEach(async () => {
       await initVault();
+      ({ userUsdcAta, vaultUsdcAta } = await setupUsdcAccounts(10_000_000_000));
     });
 
-    it("returns NotImplemented error — Phase 4 Kamino CPI stub", async () => {
+    async function deposit(amount: BN): Promise<void> {
+      await program.methods
+        .depositUsdc(amount)
+        .accounts({ owner: user.publicKey, usdcMint, userUsdcAta, vaultUsdcAta, tokenProgram: TOKEN_PROGRAM_ID } as any)
+        .signers([user])
+        .rpc();
+    }
+
+    async function withdraw(amount: BN): Promise<void> {
+      await program.methods
+        .withdraw(amount)
+        .accounts({ owner: user.publicKey, usdcMint, vaultUsdcAta, userUsdcAta, tokenProgram: TOKEN_PROGRAM_ID } as any)
+        .signers([user])
+        .rpc();
+    }
+
+    it("transfers USDC from vault ATA to user ATA", async () => {
+      const depositAmt  = new BN(2_000_000_000);
+      const withdrawAmt = new BN(500_000_000);
+      await deposit(depositAmt);
+
+      const userBefore  = (await getAccount(conn, userUsdcAta)).amount;
+      const vaultBefore = (await getAccount(conn, vaultUsdcAta)).amount;
+
+      await withdraw(withdrawAmt);
+
+      const userAfter  = (await getAccount(conn, userUsdcAta)).amount;
+      const vaultAfter = (await getAccount(conn, vaultUsdcAta)).amount;
+
+      assert.equal(userAfter  - userBefore,  BigInt(withdrawAmt.toString()), "user ATA must increase by withdraw amount");
+      assert.equal(vaultBefore - vaultAfter, BigInt(withdrawAmt.toString()), "vault ATA must decrease by withdraw amount");
+    });
+
+    it("decreases vault.usdc_deposited by the withdrawn amount", async () => {
+      const depositAmt  = new BN(1_000_000_000);
+      const withdrawAmt = new BN(300_000_000);
+      await deposit(depositAmt);
+
+      await withdraw(withdrawAmt);
+
+      const vault = await program.account.userVault.fetch(vaultPDA);
+      assert.ok(
+        new BN(vault.usdcDeposited).eq(depositAmt.sub(withdrawAmt)),
+        "usdc_deposited must decrease by the withdrawn amount"
+      );
+    });
+
+    it("allows withdrawing the full free balance", async () => {
+      const amount = new BN(1_500_000_000);
+      await deposit(amount);
+      await withdraw(amount);
+
+      const vault = await program.account.userVault.fetch(vaultPDA);
+      assert.ok(new BN(vault.usdcDeposited).isZero(), "usdc_deposited must be zero after full withdraw");
+    });
+
+    it("allows multiple partial withdrawals", async () => {
+      await deposit(new BN(3_000_000_000));
+      await withdraw(new BN(1_000_000_000));
+      await withdraw(new BN(1_000_000_000));
+
+      const vault = await program.account.userVault.fetch(vaultPDA);
+      assert.ok(new BN(vault.usdcDeposited).eq(new BN(1_000_000_000)));
+    });
+
+    it("rejects a zero-amount withdrawal (ZeroDeposit)", async () => {
+      await deposit(new BN(1_000_000_000));
+
       try {
-        await program.methods
-          .withdraw(new BN(1_000_000))
-          .accounts({ owner: user.publicKey })
-          .signers([user])
-          .rpc();
-        assert.fail("expected NotImplemented");
+        await withdraw(new BN(0));
+        assert.fail("expected ZeroDeposit");
       } catch (err: any) {
         assert.ok(
-          err.error?.errorCode?.code === "NotImplemented" ||
-          err.message?.includes("NotImplemented"),
-          "withdraw must return NotImplemented until Kamino CPI is wired"
+          err.error?.errorCode?.code === "ZeroDeposit" ||
+          err.message?.includes("ZeroDeposit"),
+          "must reject withdrawal of zero"
         );
       }
     });
 
-    it("rejects call from a non-owner signer (vault PDA not found)", async () => {
+    it("rejects withdrawal exceeding free balance (InsufficientUsdc)", async () => {
+      await deposit(new BN(500_000_000));
+
+      try {
+        await withdraw(new BN(600_000_000));
+        assert.fail("expected InsufficientUsdc");
+      } catch (err: any) {
+        assert.ok(
+          err.error?.errorCode?.code === "InsufficientUsdc" ||
+          err.message?.includes("InsufficientUsdc"),
+          "must reject withdrawal exceeding deposited balance"
+        );
+      }
+    });
+
+    it("rejects withdrawal exceeding usdc_free when collateral is locked", async () => {
+      // Deposit $1 000, lock $400 as collateral, try to withdraw $700
+      await deposit(new BN(1_000_000_000));
+      await setScore(810); // Tier A required for loan
+
+      const [loanPDA] = deriveLoanTradPDA(vaultPDA, 0, program.programId);
+      await program.methods
+        .approveTraditionalLoan(
+          new BN(200_000_000), 975, new BN(400_000_000), 70, 30, 575, 975,
+          makeInstallments(2, 110_000_000)
+        )
+        .accounts({ owner: user.publicKey, loan: loanPDA } as any)
+        .signers([user])
+        .rpc();
+
+      // usdc_free = 1_000 - 400 = 600. Attempting 700 must fail.
+      try {
+        await withdraw(new BN(700_000_000));
+        assert.fail("expected InsufficientUsdc — collateral is locked");
+      } catch (err: any) {
+        assert.ok(
+          err.error?.errorCode?.code === "InsufficientUsdc" ||
+          err.message?.includes("InsufficientUsdc"),
+          "must reject withdrawal that would dip into locked collateral"
+        );
+      }
+    });
+
+    it("allows withdrawing exactly usdc_free when collateral is locked", async () => {
+      await deposit(new BN(1_000_000_000));
+      await setScore(810);
+
+      const [loanPDA] = deriveLoanTradPDA(vaultPDA, 0, program.programId);
+      await program.methods
+        .approveTraditionalLoan(
+          new BN(200_000_000), 975, new BN(400_000_000), 70, 30, 575, 975,
+          makeInstallments(2, 110_000_000)
+        )
+        .accounts({ owner: user.publicKey, loan: loanPDA } as any)
+        .signers([user])
+        .rpc();
+
+      // usdc_free = 600_000_000 — withdrawing exactly that must succeed
+      await withdraw(new BN(600_000_000));
+
+      const vault = await program.account.userVault.fetch(vaultPDA);
+      assert.ok(new BN(vault.usdcDeposited).eq(new BN(400_000_000)));
+      assert.ok(new BN(vault.usdcLocked).eq(new BN(400_000_000)));
+    });
+
+    it("rejects withdrawal from a non-owner signer (Unauthorized)", async () => {
+      await deposit(new BN(1_000_000_000));
+
       const attacker = Keypair.generate();
       await airdrop(conn, attacker.publicKey);
 
       try {
         await program.methods
-          .withdraw(new BN(1_000_000))
-          .accounts({ owner: attacker.publicKey })
+          .withdraw(new BN(500_000_000))
+          .accounts({
+            owner:        attacker.publicKey,
+            usdcMint,
+            vaultUsdcAta,
+            userUsdcAta,
+            tokenProgram: TOKEN_PROGRAM_ID,
+          } as any)
           .signers([attacker])
           .rpc();
-        assert.fail("expected error for attacker without a vault");
+        assert.fail("expected Unauthorized");
       } catch (err: any) {
-        assert.ok(err);
+        assert.ok(err, "non-owner must not be able to withdraw from another user's vault");
       }
     });
   });
@@ -1778,7 +1939,7 @@ describe("avere", () => {
       assert.isAbove(new BN(loan.disbursedAt).toNumber(), 0, "disbursed_at must be set after disburse");
 
       // ── 5. Repay all 3 installments ──────────────────────────────────────
-      const poolBeforeRepay = await program.account.bankPool.fetch(bankPoolPDA);
+      const poolAtaBeforeRepay = (await getAccount(conn, bankPoolUsdcAta)).amount;
 
       for (let i = 0; i < 3; i++) {
         await program.methods
@@ -1806,13 +1967,12 @@ describe("avere", () => {
       vault = await program.account.userVault.fetch(vaultPDA);
       assert.equal(vault.activeLoans, 0, "active_loans must be 0 after full repayment");
 
-      const poolAfterRepay = await program.account.bankPool.fetch(bankPoolPDA);
-      const totalRepaid = 3 * 180_000_000;
-      assert.ok(
-        new BN(poolAfterRepay.usdcAvailable).eq(
-          new BN(poolBeforeRepay.usdcAvailable).add(new BN(totalRepaid))
-        ),
-        "usdc_available must increase by total repaid amount"
+      const poolAtaAfterRepay = (await getAccount(conn, bankPoolUsdcAta)).amount;
+      const totalRepaid = BigInt(3 * 180_000_000);
+      assert.equal(
+        poolAtaAfterRepay - poolAtaBeforeRepay,
+        totalRepaid,
+        "pool ATA must increase by total repaid amount"
       );
 
       // ── 6. Close loan — recover rent ─────────────────────────────────────

@@ -218,7 +218,7 @@ export default function Payments() {
         >
           <h1 className="text-2xl font-bold text-foreground">Payments</h1>
           <p className="text-sm text-muted-foreground">
-            {paid} of {installments.length} installments paid
+            {paid} of {installments.length} monthly payments made
           </p>
         </motion.div>
 

@@ -1,41 +1,27 @@
 import { useState } from "react";
-import { motion } from "framer-motion";
-import { Calendar, TrendingUp, AlertCircle, Loader2, Copy, Check, ArrowDownLeft, Banknote, CheckCircle2 } from "lucide-react";
-import { loadHistory, appendHistory, relativeTime, type TxEvent } from "@/lib/txHistory";
+import { motion, AnimatePresence } from "framer-motion";
+import {
+  Copy, Check, ArrowDownLeft, Banknote, CheckCircle2,
+  Landmark, ShieldCheck, TrendingUp, ArrowUpRight, Loader2, X,
+} from "lucide-react";
+import { loadHistory, relativeTime, type TxEvent } from "@/lib/txHistory";
 import MobileLayout from "@/components/layout/MobileLayout";
-import SummaryCard from "@/components/cards/SummaryCard";
-import StatRow from "@/components/cards/StatRow";
-import ScoreCard from "@/components/cards/ScoreCard";
+import AgentCard from "@/components/cards/AgentCard";
 import { Button } from "@/components/ui/button";
 import { useNavigate } from "react-router-dom";
 import { useWallet } from "@solana/wallet-adapter-react";
-import {
-  createAssociatedTokenAccountInstruction,
-  getAssociatedTokenAddressSync,
-  TOKEN_PROGRAM_ID,
-  ASSOCIATED_TOKEN_PROGRAM_ID,
-} from "@solana/spl-token";
-import { Transaction, PublicKey } from "@solana/web3.js";
-import { useProgram } from "@/hooks/useProgram";
 import { useVault } from "@/hooks/useVault";
-import { useActiveLoan } from "@/hooks/useActiveLoan";
 import { useScore } from "@/hooks/useScore";
 import { usePlaidToken } from "@/hooks/usePlaidToken";
-import { fetchOraclePubkey, requestOracleSignature, fetchScore } from "@/lib/score-api";
-import {
-  connection,
-  deriveVaultPDA,
-  deriveLoanTradPDA,
-  deriveBankPoolPDA,
-  USDC_MINT,
-  ownerUsdcAta,
-  bankPoolUsdcAta,
-  TOKEN_PROGRAM_ID as TPK,
-} from "@/lib/solana";
+import { useProgram } from "@/hooks/useProgram";
+import { connection, deriveVaultPDA, toUsdc, vaultUsdcAta, ownerUsdcAta, USDC_MINT, TOKEN_PROGRAM_ID } from "@/lib/solana";
 import { toast } from "@/hooks/use-toast";
 
 const fmt = (v: number) =>
   new Intl.NumberFormat("en-US", { style: "currency", currency: "USD", minimumFractionDigits: 2 }).format(v);
+
+const fmtCompact = (v: number) =>
+  new Intl.NumberFormat("en-US", { style: "currency", currency: "USD", minimumFractionDigits: 2, maximumFractionDigits: 2 }).format(v);
 
 function ActivityRow({ event }: { event: TxEvent }) {
   const icons = {
@@ -70,26 +56,28 @@ function ActivityRow({ event }: { event: TxEvent }) {
   );
 }
 
-function daysUntil(ts: number): number {
-  const now = Date.now() / 1000;
-  return Math.max(0, Math.round((ts - now) / 86400));
-}
-
 const DEMO_WALLETS: Record<string, string> = {
   "ASXean8novL6x5eUWQ2qRdsXU9crTRkB6auA6uxCVeio": "Maria",
   "Fsu2TS6ZbPVhoTdManZvUqdNuWq95fDHetj91wtHYs7r": "James",
 };
+
+const BASELINE_APY = 0.061;
 
 const Dashboard = () => {
   const navigate = useNavigate();
   const { publicKey, sendTransaction } = useWallet();
   const program = useProgram();
   const { data: vault, refetch: refetchVault } = useVault();
-  const { data: loan, refetch: refetchLoan } = useActiveLoan();
-  const { data: scoreData } = useScore();
+  const relationshipMonths = vault?.createdAt
+    ? Math.floor((Date.now() / 1000 - vault.createdAt) / (30 * 24 * 3600))
+    : 0;
+  const { data: scoreData } = useScore(relationshipMonths);
   const { token: plaidToken } = usePlaidToken(publicKey?.toBase58() ?? null);
-  const [paying, setPaying] = useState(false);
+
   const [copied, setCopied] = useState(false);
+  const [showWithdraw, setShowWithdraw] = useState(false);
+  const [withdrawAmount, setWithdrawAmount] = useState("");
+  const [withdrawing, setWithdrawing] = useState(false);
 
   const copyAddress = () => {
     if (!publicKey) return;
@@ -98,119 +86,59 @@ const Dashboard = () => {
     setTimeout(() => setCopied(false), 2000);
   };
 
-  const displayScore = scoreData?.score || vault?.score || 0;
   const history = publicKey ? loadHistory(publicKey.toBase58()) : [];
   const demoLabel = publicKey ? DEMO_WALLETS[publicKey.toBase58()] : undefined;
 
-  // Next unpaid installment
-  const nextInst = loan?.installments?.find((i) => !i.paid);
+  const totalBalance = vault?.usdcDeposited ?? 0;
+  const freeBalance = vault?.usdcFree ?? 0;
+  const lockedBalance = vault?.usdcLocked ?? 0;
 
-  async function ensureUserAta(): Promise<PublicKey> {
-    if (!publicKey) throw new Error("Not connected");
-    const ata = getAssociatedTokenAddressSync(USDC_MINT, publicKey, false);
-    const info = await connection.getAccountInfo(ata);
-    if (!info) {
-      const tx = new Transaction().add(
-        createAssociatedTokenAccountInstruction(
-          publicKey, ata, publicKey, USDC_MINT,
-          TOKEN_PROGRAM_ID, ASSOCIATED_TOKEN_PROGRAM_ID
-        )
-      );
-      const sig = await sendTransaction(tx, connection);
-      await connection.confirmTransaction(sig, "confirmed");
-    }
-    return ata;
-  }
+  const daysInVault = vault?.createdAt
+    ? Math.max(0, (Date.now() / 1000 - vault.createdAt) / 86400)
+    : 0;
+  const estimatedYieldEarned = totalBalance * BASELINE_APY * (daysInVault / 365);
+  const estimatedMonthlyYield = totalBalance * BASELINE_APY / 12;
 
-  async function handleMakePayment() {
-    if (!publicKey || !program || !loan?.exists || !nextInst) return;
-    setPaying(true);
+  const displayScore = scoreData?.score || vault?.score || 0;
+  const displayTier = scoreData?.tier ?? vault?.scoreTier;
 
+  // Parsed withdraw amount for validation
+  const parsedAmount = parseFloat(withdrawAmount) || 0;
+  const withdrawAmountValid = parsedAmount > 0 && parsedAmount <= freeBalance;
+
+  async function handleWithdraw() {
+    if (!publicKey || !program || !withdrawAmountValid) return;
+    setWithdrawing(true);
     try {
       const [vaultPDA] = deriveVaultPDA(publicKey);
-      const [loanPDA] = deriveLoanTradPDA(vaultPDA, loan.loanId);
-      const [bankPoolPDA] = deriveBankPoolPDA();
-      const userAta = await ensureUserAta();
-      const poolAta = bankPoolUsdcAta();
-
-      // repay_installment
-      const repayTx = await program.methods
-        .repayInstallment(nextInst.index)
+      const tx = await program.methods
+        .withdraw(toUsdc(parsedAmount))
         .accounts({
-          loan: loanPDA,
-          bankPool: bankPoolPDA,
-          usdcMint: USDC_MINT,
-          userUsdcAta: userAta,
-          bankPoolUsdcAta: poolAta,
-          tokenProgram: TPK,
+          vault:        vaultPDA,
+          usdcMint:     USDC_MINT,
+          vaultUsdcAta: vaultUsdcAta(vaultPDA),
+          userUsdcAta:  ownerUsdcAta(publicKey),
+          tokenProgram: TOKEN_PROGRAM_ID,
         })
         .transaction();
-      const repaySig = await sendTransaction(repayTx, connection);
-      await connection.confirmTransaction(repaySig, "confirmed");
-
-      // update_score after repay
-      const currentScore = vault?.score ?? 0;
-      const dueTs = nextInst.dueTs;
-      const now = Math.floor(Date.now() / 1000);
-      const diff = dueTs - now;
-      let delta = 10; // on-time
-      if (diff > 5 * 86400) delta = 30;       // early >5d
-      else if (diff > 0) delta = 20;           // early 1–5d
-      else if (now - dueTs < 7 * 86400) delta = -20; // late ≤7d
-      else delta = -50;                         // late >7d
-
-      const engineScore = await fetchScore(publicKey!.toBase58(), plaidToken ?? undefined);
-      const newScore = Math.max(0, Math.min(1000, engineScore.score + delta));
-      const oraclePubkey = await fetchOraclePubkey();
-      const scoreTx = await program.methods
-        .updateScore(newScore)
-        .accounts({ scoreAuthority: oraclePubkey })
-        .transaction();
-      const { blockhash, lastValidBlockHeight } = await connection.getLatestBlockhash();
-      scoreTx.recentBlockhash = blockhash;
-      scoreTx.feePayer = publicKey!;
-      const oracleSignedTx = await requestOracleSignature(
-        publicKey!.toBase58(),
-        newScore,
-        scoreTx
-      );
-      const scoreSig = await sendTransaction(oracleSignedTx, connection);
-      await connection.confirmTransaction({ signature: scoreSig, blockhash, lastValidBlockHeight }, "confirmed");
-
-      // Close the loan PDA if this was the last installment so the next loan can reuse the slot
-      const isLastPayment = (loan.paidCount + 1) === loan.nInstallments;
-      if (isLastPayment) {
-        const closeTx = await program.methods
-          .closeLoan()
-          .accounts({ vault: vaultPDA, loan: loanPDA })
-          .transaction();
-        const closeSig = await sendTransaction(closeTx, connection);
-        await connection.confirmTransaction(closeSig, "confirmed");
-      }
-
-      appendHistory(publicKey.toBase58(), {
-        type: "payment",
-        amount: nextInst.amountUsdc,
-        scoreDelta: delta,
-        newScore,
-        timestamp: Date.now(),
-      });
-
+      const sig = await sendTransaction(tx, connection);
+      await connection.confirmTransaction(sig, "confirmed");
       toast({
-        title: "Payment made!",
-        description: `Installment ${nextInst.index + 1} paid · Score ${delta >= 0 ? "+" : ""}${delta} pts`,
+        title: "Withdrawal successful",
+        description: `${fmtCompact(parsedAmount)} transferred to your wallet`,
       });
-
-      await Promise.all([refetchVault(), refetchLoan()]);
+      setWithdrawAmount("");
+      setShowWithdraw(false);
+      await refetchVault();
     } catch (err: unknown) {
       console.error(err);
       toast({
-        title: "Payment failed",
+        title: "Withdrawal failed",
         description: err instanceof Error ? err.message : "Transaction error",
         variant: "destructive",
       });
     } finally {
-      setPaying(false);
+      setWithdrawing(false);
     }
   }
 
@@ -218,7 +146,7 @@ const Dashboard = () => {
     return (
       <MobileLayout>
         <div className="flex h-full flex-col items-center justify-center gap-4 px-5">
-          <p className="text-center text-muted-foreground">Connect your wallet to view your dashboard.</p>
+          <p className="text-center text-muted-foreground">Connect your wallet to view your account.</p>
           <Button variant="accent" onClick={() => navigate("/home")}>Connect Wallet</Button>
         </div>
       </MobileLayout>
@@ -236,14 +164,14 @@ const Dashboard = () => {
           className="mb-6"
         >
           <div className="flex items-center gap-2">
-            <p className="text-sm text-muted-foreground">Welcome back</p>
+            <p className="text-sm text-muted-foreground">Welcome back{demoLabel ? `, ${demoLabel}` : ""}</p>
             {demoLabel && (
               <span className="rounded-full bg-accent/10 px-2 py-0.5 text-xs font-semibold text-accent">
-                Demo · {demoLabel}{(scoreData?.tier ?? vault?.scoreTier) ? ` · Tier ${scoreData?.tier ?? vault?.scoreTier}` : ""}
+                Demo{displayTier ? ` · Tier ${displayTier}` : ""}
               </span>
             )}
           </div>
-          <h1 className="text-2xl font-bold text-foreground">Your Loan Overview</h1>
+          <h1 className="text-2xl font-bold text-foreground">My Account</h1>
           {publicKey && (
             <button
               onClick={copyAddress}
@@ -257,161 +185,222 @@ const Dashboard = () => {
           )}
         </motion.div>
 
-        {/* Credit Score Card */}
-        <div className="mb-4">
-          <ScoreCard
-            score={displayScore}
-            tier={scoreData?.tier ?? (vault?.score ? vault.scoreTier : undefined)}
-            breakdown={scoreData?.breakdown}
-            wallet={publicKey?.toBase58()}
-            delay={0.05}
-          />
-        </div>
+        {/* Main Balance Card */}
+        <motion.div
+          initial={{ opacity: 0, y: 16 }}
+          animate={{ opacity: 1, y: 0 }}
+          transition={{ duration: 0.4, delay: 0.05 }}
+          className="mb-4 rounded-2xl bg-primary p-6 shadow-card"
+        >
+          <div className="flex items-center gap-2 mb-1">
+            <Landmark className="h-4 w-4 text-primary-foreground/60" />
+            <p className="text-sm text-primary-foreground/70">Account Balance</p>
+          </div>
+          <div className="flex items-baseline gap-2 mb-4">
+            <span className="font-financial text-4xl font-bold text-primary-foreground">
+              {fmtCompact(totalBalance)}
+            </span>
+          </div>
 
-        {loan?.exists ? (
-          <>
-            {/* Loan Summary */}
-            <SummaryCard title="Loan Summary" variant="primary" delay={0.1}>
-              <div className="space-y-1">
-                <StatRow label="Principal" value={fmt(loan.principal)} variant="light" />
-                <StatRow
-                  label="Total Installments"
-                  value={`${loan.paidCount} / ${loan.nInstallments} paid`}
-                  variant="light"
-                />
-                {loan.hybridDefiPct > 0 && (
-                  <StatRow
-                    label="Hybrid split"
-                    value={`${loan.hybridDefiPct}% DeFi · ${loan.hybridTradPct}% Trad`}
-                    variant="light"
-                  />
-                )}
-                <div className="my-3 h-px bg-primary-foreground/20" />
-                <div className="flex items-center justify-between">
-                  <span className="text-sm font-medium text-primary-foreground/80">Total to Pay</span>
-                  <span className="font-financial text-2xl font-bold text-primary-foreground">
-                    {fmt(loan.installments.filter((i) => !i.paid).reduce((s, i) => s + i.amountUsdc, 0))}
-                  </span>
-                </div>
-              </div>
-            </SummaryCard>
-
-            {/* Next Installment */}
-            {nextInst && (
-              <motion.div
-                initial={{ opacity: 0, y: 16 }}
-                animate={{ opacity: 1, y: 0 }}
-                transition={{ duration: 0.4, delay: 0.2 }}
-                className="mt-4"
-              >
-                <div className="rounded-2xl border border-avere-200 bg-avere-50 p-5 shadow-soft">
-                  <div className="flex items-start justify-between">
-                    <div>
-                      <div className="flex items-center gap-2 text-sm text-muted-foreground">
-                        <Calendar className="h-4 w-4" />
-                        <span>Next Installment</span>
-                      </div>
-                      <div className="mt-2 flex items-baseline gap-2">
-                        <span className="font-financial text-3xl font-bold text-foreground">
-                          {fmt(nextInst.amountUsdc)}
-                        </span>
-                      </div>
-                    </div>
-                    <div className="rounded-xl bg-accent/15 px-3 py-1.5">
-                      <span className="text-sm font-semibold text-accent">
-                        Due in {daysUntil(nextInst.dueTs)} days
-                      </span>
-                    </div>
-                  </div>
-                  {/* Progress */}
-                  <div className="mt-4">
-                    <div className="mb-2 flex justify-between text-xs text-muted-foreground">
-                      <span>Installments paid</span>
-                      <span className="font-medium">{loan.paidCount} of {loan.nInstallments}</span>
-                    </div>
-                    <div className="h-2 overflow-hidden rounded-full bg-avere-100">
-                      <motion.div
-                        initial={{ width: 0 }}
-                        animate={{ width: `${(loan.paidCount / loan.nInstallments) * 100}%` }}
-                        transition={{ duration: 0.8, delay: 0.4, ease: "easeOut" }}
-                        className="h-full rounded-full bg-gradient-accent"
-                      />
-                    </div>
-                  </div>
-                </div>
-              </motion.div>
-            )}
-
-            {/* Interest Rate */}
-            <motion.div
-              initial={{ opacity: 0, y: 16 }}
-              animate={{ opacity: 1, y: 0 }}
-              transition={{ duration: 0.4, delay: 0.3 }}
-              className="mt-4 flex items-center gap-3 rounded-xl bg-card p-4 shadow-soft"
-            >
-              <div className="flex h-10 w-10 items-center justify-center rounded-full bg-avere-100">
-                <TrendingUp className="h-5 w-5 text-avere-600" />
-              </div>
+          {/* Balance breakdown */}
+          <div className="flex gap-4 border-t border-primary-foreground/20 pt-4 mb-4">
+            <div className="flex-1">
+              <p className="text-[11px] text-primary-foreground/60 mb-0.5">Available</p>
+              <p className="font-financial text-sm font-semibold text-primary-foreground">
+                {fmtCompact(freeBalance)}
+              </p>
+            </div>
+            {lockedBalance > 0 && (
               <div className="flex-1">
-                <p className="text-sm font-medium text-foreground">Blended Rate</p>
-                <p className="text-xs text-muted-foreground">
-                  {loan.hybridDefiPct > 0
-                    ? `${loan.hybridDefiPct}% DeFi tranche · ${loan.hybridTradPct}% traditional`
-                    : "Fixed annual rate"}
+                <p className="text-[11px] text-primary-foreground/60 mb-0.5">In loans</p>
+                <p className="font-financial text-sm font-semibold text-primary-foreground">
+                  {fmtCompact(lockedBalance)}
                 </p>
               </div>
-              <span className="font-financial text-xl font-bold text-accent">
-                {loan.blendedRateApr.toFixed(2)}%
-              </span>
-            </motion.div>
+            )}
+            <div className="flex-1">
+              <p className="text-[11px] text-primary-foreground/60 mb-0.5">Earned</p>
+              <p className="font-financial text-sm font-semibold text-green-300">
+                +{fmtCompact(estimatedYieldEarned)}
+              </p>
+            </div>
+          </div>
 
-            {/* Payment Button */}
-            <motion.div
-              initial={{ opacity: 0, y: 16 }}
-              animate={{ opacity: 1, y: 0 }}
-              transition={{ duration: 0.4, delay: 0.4 }}
-              className="mt-6"
-            >
-              <Button
-                variant="accent"
-                size="lg"
-                className="w-full"
-                disabled={!nextInst || paying}
-                onClick={handleMakePayment}
+          {/* Action buttons */}
+          {vault?.exists && totalBalance > 0 && (
+            <div className="flex gap-2">
+              <button
+                onClick={() => navigate("/deposit")}
+                className="flex-1 flex items-center justify-center gap-1.5 rounded-xl bg-primary-foreground/15 hover:bg-primary-foreground/25 transition-colors px-3 py-2"
               >
-                {paying ? (
-                  <><Loader2 className="mr-2 h-5 w-5 animate-spin" /> Processing…</>
-                ) : (
-                  "Make Payment"
+                <ArrowDownLeft className="h-4 w-4 text-primary-foreground" />
+                <span className="text-sm font-medium text-primary-foreground">Deposit</span>
+              </button>
+              <button
+                onClick={() => setShowWithdraw((v) => !v)}
+                className={`flex-1 flex items-center justify-center gap-1.5 rounded-xl transition-colors px-3 py-2 ${
+                  showWithdraw
+                    ? "bg-primary-foreground/30"
+                    : "bg-primary-foreground/15 hover:bg-primary-foreground/25"
+                }`}
+              >
+                <ArrowUpRight className="h-4 w-4 text-primary-foreground" />
+                <span className="text-sm font-medium text-primary-foreground">Withdraw</span>
+              </button>
+            </div>
+          )}
+        </motion.div>
+
+        {/* Withdraw Panel */}
+        <AnimatePresence>
+          {showWithdraw && (
+            <motion.div
+              key="withdraw-panel"
+              initial={{ opacity: 0, height: 0, marginBottom: 0 }}
+              animate={{ opacity: 1, height: "auto", marginBottom: 16 }}
+              exit={{ opacity: 0, height: 0, marginBottom: 0 }}
+              transition={{ duration: 0.25, ease: "easeInOut" }}
+              className="overflow-hidden"
+            >
+              <div className="rounded-2xl border border-border bg-card p-5 shadow-soft">
+                <div className="flex items-center justify-between mb-4">
+                  <h3 className="text-sm font-semibold text-foreground">Withdraw funds</h3>
+                  <button
+                    onClick={() => { setShowWithdraw(false); setWithdrawAmount(""); }}
+                    className="rounded-full p-1 hover:bg-secondary transition-colors"
+                  >
+                    <X className="h-4 w-4 text-muted-foreground" />
+                  </button>
+                </div>
+
+                <div className="mb-1 flex items-center justify-between">
+                  <label className="text-xs text-muted-foreground">Amount (USD)</label>
+                  <button
+                    onClick={() => setWithdrawAmount(freeBalance.toFixed(2))}
+                    className="text-xs font-semibold text-accent hover:underline"
+                  >
+                    Max {fmtCompact(freeBalance)}
+                  </button>
+                </div>
+                <div className="relative mb-4">
+                  <span className="absolute left-3 top-1/2 -translate-y-1/2 text-sm font-medium text-muted-foreground">$</span>
+                  <input
+                    type="number"
+                    min="0.01"
+                    max={freeBalance}
+                    step="0.01"
+                    value={withdrawAmount}
+                    onChange={(e) => setWithdrawAmount(e.target.value)}
+                    placeholder="0.00"
+                    className="w-full rounded-xl border border-border bg-secondary pl-7 pr-4 py-3 text-sm font-medium text-foreground placeholder:text-muted-foreground focus:border-accent focus:outline-none focus:ring-1 focus:ring-accent"
+                  />
+                </div>
+
+                {parsedAmount > freeBalance && (
+                  <p className="mb-3 text-xs text-destructive">
+                    Exceeds available balance ({fmtCompact(freeBalance)})
+                  </p>
                 )}
-              </Button>
+                {lockedBalance > 0 && (
+                  <p className="mb-3 text-xs text-muted-foreground">
+                    {fmtCompact(lockedBalance)} is locked as loan collateral and cannot be withdrawn.
+                  </p>
+                )}
+
+                <Button
+                  variant="accent"
+                  size="lg"
+                  className="w-full"
+                  disabled={!withdrawAmountValid || withdrawing}
+                  onClick={handleWithdraw}
+                >
+                  {withdrawing ? (
+                    <><Loader2 className="mr-2 h-5 w-5 animate-spin" /> Processing…</>
+                  ) : (
+                    `Withdraw ${parsedAmount > 0 ? fmtCompact(parsedAmount) : ""}`
+                  )}
+                </Button>
+              </div>
             </motion.div>
-          </>
-        ) : (
-          /* No active loan — pre-approval card */
+          )}
+        </AnimatePresence>
+
+        {/* Yield summary row */}
+        {totalBalance > 0 && (
+          <motion.div
+            initial={{ opacity: 0, y: 12 }}
+            animate={{ opacity: 1, y: 0 }}
+            transition={{ duration: 0.4, delay: 0.1 }}
+            className="mb-4 flex items-center gap-3 rounded-xl bg-card p-4 shadow-soft"
+          >
+            <div className="flex h-9 w-9 items-center justify-center rounded-full bg-green-500/10">
+              <TrendingUp className="h-4 w-4 text-green-600" />
+            </div>
+            <div className="flex-1">
+              <p className="text-sm font-medium text-foreground">Monthly yield</p>
+              <p className="text-xs text-muted-foreground">Earning {(BASELINE_APY * 100).toFixed(1)}% APY</p>
+            </div>
+            <span className="font-financial text-lg font-bold text-green-600">
+              +{fmtCompact(estimatedMonthlyYield)}/mo
+            </span>
+          </motion.div>
+        )}
+
+        {/* Credit Score pill */}
+        {displayScore > 0 && (
+          <motion.button
+            initial={{ opacity: 0, y: 8 }}
+            animate={{ opacity: 1, y: 0 }}
+            transition={{ duration: 0.35, delay: 0.15 }}
+            onClick={() => navigate("/loans")}
+            className="mb-4 flex w-full items-center gap-3 rounded-xl border border-border bg-card px-4 py-3 text-left shadow-soft transition-all hover:border-accent/50"
+          >
+            <div className="flex h-9 w-9 items-center justify-center rounded-full bg-accent/10">
+              <ShieldCheck className="h-4 w-4 text-accent" />
+            </div>
+            <div className="flex-1">
+              <p className="text-sm font-medium text-foreground">Credit Score</p>
+              <p className="text-xs text-muted-foreground">
+                Tier {displayTier ?? "—"} · {scoreData?.base_rate_bps ? `${(scoreData.base_rate_bps / 100).toFixed(2)}% APR` : "View your loan options"}
+              </p>
+            </div>
+            <span className="font-financial text-xl font-bold text-accent">{displayScore}</span>
+          </motion.button>
+        )}
+
+        {/* AI Yield Optimizer */}
+        {demoLabel && vault?.exists && vault.usdcDeposited > 0 && publicKey && (
+          <div className="mb-4">
+            <AgentCard
+              wallet={publicKey.toBase58()}
+              tier={scoreData?.tier ?? vault.scoreTier}
+              freeUsdc={vault.usdcFree}
+              lockedUsdc={vault.usdcLocked}
+              delay={0.2}
+            />
+          </div>
+        )}
+
+        {/* No vault yet — deposit CTA */}
+        {(!vault?.exists || totalBalance === 0) && (
           <motion.div
             initial={{ opacity: 0, y: 16 }}
             animate={{ opacity: 1, y: 0 }}
-            transition={{ duration: 0.4, delay: 0.15 }}
-            className="mt-4 rounded-2xl border border-accent/30 bg-accent/5 p-6"
+            transition={{ duration: 0.4, delay: 0.2 }}
+            className="mb-4 rounded-2xl border border-accent/30 bg-accent/5 p-6"
           >
-            <p className="text-xs font-semibold uppercase tracking-wide text-accent mb-1">Pre-approved</p>
-            <p className="font-financial text-2xl font-bold text-foreground">
-              Up to {fmt((scoreData?.max_loan_usdc ?? 0) / 1_000_000)}
-            </p>
+            <p className="text-xs font-semibold uppercase tracking-wide text-accent mb-1">Get started</p>
+            <p className="font-financial text-xl font-bold text-foreground">Start earning yield</p>
             <p className="text-sm text-muted-foreground mt-1">
-              Based on your Tier {scoreData?.tier ?? vault?.scoreTier ?? "—"} score
-              {scoreData?.base_rate_bps
-                ? ` · ${(scoreData.base_rate_bps / 100).toFixed(2)}% APR`
-                : ""}
+              Deposit funds to earn {(BASELINE_APY * 100).toFixed(1)}%+ APY and unlock your credit limit.
             </p>
             <Button
               variant="accent"
               size="lg"
               className="mt-4 w-full"
-              onClick={() => navigate(vault?.exists ? "/loan" : "/deposit")}
+              onClick={() => navigate("/deposit")}
             >
-              {vault?.exists ? "Apply for a Loan" : "Deposit to Start"}
+              Deposit Now
             </Button>
           </motion.div>
         )}
@@ -420,39 +409,23 @@ const Dashboard = () => {
         <motion.div
           initial={{ opacity: 0 }}
           animate={{ opacity: 1 }}
-          transition={{ duration: 0.4, delay: 0.5 }}
-          className="mt-6 flex gap-3"
+          transition={{ duration: 0.4, delay: 0.35 }}
+          className="mt-2 flex gap-3"
         >
           <button
-            onClick={() => navigate(vault?.exists ? "/loan" : "/deposit")}
+            onClick={() => navigate("/loans")}
             className="flex-1 rounded-xl border border-border bg-card p-4 text-left shadow-soft transition-all hover:border-accent/50 hover:shadow-md"
           >
-            <p className="text-sm font-medium text-foreground">New Loan</p>
-            <p className="text-xs text-muted-foreground">Get more credit</p>
+            <p className="text-sm font-medium text-foreground">My Loans</p>
+            <p className="text-xs text-muted-foreground">Manage credit</p>
           </button>
           <button
             onClick={() => navigate("/earn")}
             className="flex-1 rounded-xl border border-border bg-card p-4 text-left shadow-soft transition-all hover:border-accent/50 hover:shadow-md"
           >
-            <p className="text-sm font-medium text-foreground">Earn</p>
-            <p className="text-xs text-muted-foreground">Build score</p>
+            <p className="text-sm font-medium text-foreground">Save & Earn</p>
+            <p className="text-xs text-muted-foreground">Grow your savings</p>
           </button>
-        </motion.div>
-
-        {/* Tip Card */}
-        <motion.div
-          initial={{ opacity: 0 }}
-          animate={{ opacity: 1 }}
-          transition={{ duration: 0.4, delay: 0.6 }}
-          className="mt-6 flex items-start gap-3 rounded-xl bg-avere-50 p-4"
-        >
-          <AlertCircle className="mt-0.5 h-5 w-5 flex-shrink-0 text-avere-600" />
-          <div>
-            <p className="text-sm font-medium text-foreground">Pro tip</p>
-            <p className="text-xs text-muted-foreground">
-              Pay early to earn +20–30 score points and unlock better rates on your next loan.
-            </p>
-          </div>
         </motion.div>
 
         {/* Recent Activity */}
@@ -460,7 +433,7 @@ const Dashboard = () => {
           <motion.div
             initial={{ opacity: 0 }}
             animate={{ opacity: 1 }}
-            transition={{ duration: 0.4, delay: 0.7 }}
+            transition={{ duration: 0.4, delay: 0.45 }}
             className="mt-6 mb-8"
           >
             <h2 className="mb-3 text-sm font-semibold text-foreground">Recent Activity</h2>

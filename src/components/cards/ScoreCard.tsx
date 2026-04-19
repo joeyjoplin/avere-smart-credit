@@ -1,6 +1,6 @@
 import { useState, useEffect } from "react";
 import { motion, AnimatePresence } from "framer-motion";
-import { TrendingUp, Sparkles, ChevronDown, ArrowUp, ArrowDown, Minus, Loader2 } from "lucide-react";
+import { TrendingUp, Sparkles, ChevronDown, ArrowUp, ArrowDown, Minus, Loader2, Car, Laptop, Building2 } from "lucide-react";
 import { useNavigate } from "react-router-dom";
 import type { ScoreBreakdown, ScoreExplainFactor } from "@/lib/score-api";
 import { fetchScoreExplain } from "@/lib/score-api";
@@ -11,7 +11,14 @@ interface ScoreCardProps {
   breakdown?: ScoreBreakdown;
   wallet?: string;
   delay?: number;
+  demoLabel?: string;
+  plaidToken?: string | null;
 }
+
+const DEMO_PLATFORMS: Record<string, { icon: typeof Car; label: string }> = {
+  Maria: { icon: Car,    label: "Uber income verified" },
+  James: { icon: Laptop, label: "Upwork income verified" },
+};
 
 const FACTORS = [
   { key: "cashflow_score",        label: "Cashflow",        weight: "30%" },
@@ -21,10 +28,10 @@ const FACTORS = [
 ] as const;
 
 const getScoreLevel = (score: number): { label: string; color: string } => {
-  if (score >= 800) return { label: "Tier A", color: "bg-green-500" };
-  if (score >= 600) return { label: "Tier B", color: "bg-accent" };
-  if (score >= 400) return { label: "Tier C", color: "bg-amber-500" };
-  return { label: "Tier D", color: "bg-destructive" };
+  if (score >= 800) return { label: "Grade A", color: "bg-green-500" };
+  if (score >= 600) return { label: "Grade B", color: "bg-accent" };
+  if (score >= 400) return { label: "Grade C", color: "bg-amber-500" };
+  return { label: "Grade D", color: "bg-destructive" };
 };
 
 const DIRECTION_ICON = {
@@ -33,13 +40,13 @@ const DIRECTION_ICON = {
   neutral: <Minus    className="h-3 w-3 text-muted-foreground" />,
 };
 
-const ScoreCard = ({ score, tier, breakdown, wallet, delay = 0 }: ScoreCardProps) => {
+const ScoreCard = ({ score, tier, breakdown, wallet, delay = 0, demoLabel, plaidToken }: ScoreCardProps) => {
   const navigate = useNavigate();
   const [showBreakdown, setShowBreakdown] = useState(false);
   const [explanation, setExplanation] = useState<{ summary: string; factors: ScoreExplainFactor[] } | null>(null);
   const [loadingExplain, setLoadingExplain] = useState(false);
   const { label, color } = getScoreLevel(score);
-  const displayLabel = tier ? `Tier ${tier}` : label;
+  const displayLabel = tier ? `Grade ${tier}` : label;
 
   useEffect(() => {
     if (!showBreakdown || !wallet || explanation || loadingExplain) return;
@@ -105,10 +112,10 @@ const ScoreCard = ({ score, tier, breakdown, wallet, delay = 0 }: ScoreCardProps
         <div className="flex items-center gap-2">
           <Sparkles className="h-4 w-4 text-avere-600" />
           <span className="text-xs font-medium text-foreground">
-            Deposit USDC to earn +15 score pts per deposit
+            Save USDC to earn +15 score pts per deposit
           </span>
         </div>
-        <span className="text-xs font-semibold text-accent">Earn →</span>
+        <span className="text-xs font-semibold text-accent">Save →</span>
       </button>
 
       {/* Score breakdown toggle */}
@@ -139,6 +146,13 @@ const ScoreCard = ({ score, tier, breakdown, wallet, delay = 0 }: ScoreCardProps
                     const explainFactor = explanation?.factors.find(
                       (f) => f.name.toLowerCase().includes(factorLabel.toLowerCase().split(" ")[0])
                     );
+                    const platform = key === "income_score"
+                      ? (demoLabel && DEMO_PLATFORMS[demoLabel])
+                        ? DEMO_PLATFORMS[demoLabel]
+                        : plaidToken
+                          ? { icon: Building2, label: "Bank cashflow verified" }
+                          : null
+                      : null;
                     return (
                       <div key={key}>
                         <div className="mb-1 flex items-center justify-between">
@@ -161,6 +175,12 @@ const ScoreCard = ({ score, tier, breakdown, wallet, delay = 0 }: ScoreCardProps
                             className="h-full rounded-full bg-gradient-accent"
                           />
                         </div>
+                        {platform && (
+                          <div className="mt-1.5 flex items-center gap-1.5">
+                            <platform.icon className="h-3 w-3 text-accent" />
+                            <span className="text-[11px] font-medium text-accent">{platform.label}</span>
+                          </div>
+                        )}
                         {explainFactor && (
                           <p className="mt-1 text-[11px] text-muted-foreground leading-snug">
                             {explainFactor.insight}

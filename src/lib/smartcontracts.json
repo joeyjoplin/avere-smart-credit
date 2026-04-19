@@ -842,6 +842,27 @@
           }
         },
         {
+          "name": "usdc_mint",
+          "address": "4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU"
+        },
+        {
+          "name": "vault_usdc_ata",
+          "docs": [
+            "Vault's USDC token account (source — authority is vault PDA)"
+          ],
+          "writable": true
+        },
+        {
+          "name": "user_usdc_ata",
+          "docs": [
+            "User's USDC token account (destination)"
+          ],
+          "writable": true
+        },
+        {
+          "name": "token_program"
+        },
+        {
           "name": "system_program",
           "address": "11111111111111111111111111111111"
         }

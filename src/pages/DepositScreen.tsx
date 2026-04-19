@@ -1,6 +1,6 @@
-import { useState } from "react";
+import { useState, useCallback, useEffect } from "react";
 import { motion, AnimatePresence } from "framer-motion";
-import { ArrowLeft, Coins, Info, Loader2, CheckCircle2, Circle } from "lucide-react";
+import { ArrowLeft, Coins, Info, Loader2, CheckCircle2, Circle, Building2 } from "lucide-react";
 import { useNavigate } from "react-router-dom";
 import { useWallet } from "@solana/wallet-adapter-react";
 import { PublicKey } from "@solana/web3.js";
@@ -11,13 +11,22 @@ import {
   ASSOCIATED_TOKEN_PROGRAM_ID,
 } from "@solana/spl-token";
 import { Transaction } from "@solana/web3.js";
+import { usePlaidLink } from "react-plaid-link";
+import { useQueryClient } from "@tanstack/react-query";
 import MobileLayout from "@/components/layout/MobileLayout";
 import { Button } from "@/components/ui/button";
 import { toast } from "@/hooks/use-toast";
 import { useProgram } from "@/hooks/useProgram";
 import { useVault } from "@/hooks/useVault";
 import { useScore } from "@/hooks/useScore";
-import { fetchOraclePubkey, requestOracleSignature } from "@/lib/score-api";
+import { usePlaidToken } from "@/hooks/usePlaidToken";
+import {
+  fetchOraclePubkey,
+  requestOracleSignature,
+  requestAirdropUsdc,
+  fetchPlaidLinkToken,
+  exchangePlaidToken,
+} from "@/lib/score-api";
 import {
   connection,
   deriveVaultPDA,
@@ -32,10 +41,10 @@ const MIN_DEPOSIT = 1;
 const MAX_DEPOSIT = 500;
 
 const PHASES = [
-  "Preparing vault",
-  "Transferring USDC",
-  "Activating yield",
-  "Updating score",
+  "Setting up your account",
+  "Depositing your funds",
+  "Activating your savings",
+  "Calculating your credit score",
 ] as const;
 
 const fmt = (v: number) =>
@@ -47,10 +56,70 @@ export default function DepositScreen() {
   const program = useProgram();
   const { data: vault, refetch: refetchVault } = useVault();
   const { data: scoreData } = useScore();
+  const walletStr = publicKey?.toBase58() ?? null;
+  const { token: plaidToken, setToken: setPlaidToken } = usePlaidToken(walletStr);
+  const queryClient = useQueryClient();
 
+  // step 0 = income verification, step 1 = deposit amount
+  const [step, setStep] = useState(plaidToken ? 1 : 0);
   const [amount, setAmount] = useState("");
   const [loading, setLoading] = useState(false);
-  const [phase, setPhase] = useState(-1); // -1 = idle, 0-3 = active phase index
+  const [phase, setPhase] = useState(-1);
+  const [airdropLoading, setAirdropLoading] = useState(false);
+
+  // Plaid link state
+  const [plaidLinkToken, setPlaidLinkToken] = useState<string | null>(null);
+  const [fetchingLinkToken, setFetchingLinkToken] = useState(false);
+
+  // Auto-advance to deposit step if plaidToken becomes available
+  useEffect(() => {
+    if (plaidToken && step === 0) setStep(1);
+  }, [plaidToken, step]);
+
+  const onPlaidSuccess = useCallback(
+    async (publicToken: string) => {
+      try {
+        const accessToken = await exchangePlaidToken(publicToken);
+        setPlaidToken(accessToken);
+        await queryClient.invalidateQueries({ queryKey: ["score", walletStr] });
+        toast({ title: "Income verified!", description: "Your credit score is being calculated…" });
+      } catch (err: unknown) {
+        toast({
+          title: "Bank link failed",
+          description: err instanceof Error ? err.message : "Token exchange error",
+          variant: "destructive",
+        });
+      }
+    },
+    [walletStr, setPlaidToken, queryClient]
+  );
+
+  const { open: openPlaidLink, ready: plaidReady } = usePlaidLink({
+    token: plaidLinkToken,
+    onSuccess: onPlaidSuccess,
+  });
+
+  useEffect(() => {
+    if (plaidLinkToken && plaidReady) openPlaidLink();
+  }, [plaidLinkToken, plaidReady, openPlaidLink]);
+
+  async function startPlaidLink() {
+    if (!walletStr) return;
+    if (plaidLinkToken && plaidReady) { openPlaidLink(); return; }
+    setFetchingLinkToken(true);
+    try {
+      const token = await fetchPlaidLinkToken(walletStr);
+      setPlaidLinkToken(token);
+    } catch (err: unknown) {
+      toast({
+        title: "Could not open bank link",
+        description: err instanceof Error ? err.message : "Score engine unreachable",
+        variant: "destructive",
+      });
+    } finally {
+      setFetchingLinkToken(false);
+    }
+  }
 
   const amountNum = parseFloat(amount) || 0;
   const isValid = amountNum >= MIN_DEPOSIT && amountNum <= MAX_DEPOSIT;
@@ -58,6 +127,31 @@ export default function DepositScreen() {
   async function sendAndConfirm(tx: Transaction): Promise<void> {
     const sig = await sendTransaction(tx, connection);
     await connection.confirmTransaction(sig, "confirmed");
+  }
+
+  async function handleAirdrop() {
+    if (!publicKey) return;
+    const key = `avere_faucet_${publicKey.toBase58()}`;
+    const last = parseInt(localStorage.getItem(key) ?? "0", 10);
+    if (Date.now() - last < 3_600_000) {
+      const waitMin = Math.ceil((3_600_000 - (Date.now() - last)) / 60_000);
+      toast({ title: "Already claimed", description: `Try again in ~${waitMin} min.`, variant: "destructive" });
+      return;
+    }
+    setAirdropLoading(true);
+    try {
+      const { amount_usdc } = await requestAirdropUsdc(publicKey.toBase58());
+      localStorage.setItem(key, Date.now().toString());
+      toast({ title: "Test USDC sent!", description: `$${amount_usdc.toFixed(2)} devnet USDC is on its way.` });
+    } catch (err: unknown) {
+      toast({
+        title: "Airdrop failed",
+        description: err instanceof Error ? err.message : "Try again later",
+        variant: "destructive",
+      });
+    } finally {
+      setAirdropLoading(false);
+    }
   }
 
   async function handleDeposit() {
@@ -186,20 +280,82 @@ export default function DepositScreen() {
     }
   }
 
+  // Step 0: Income verification
+  if (step === 0) {
+    return (
+      <MobileLayout showNav={false}>
+        <div className="flex h-full flex-col items-center justify-center px-8">
+          <motion.div
+            initial={{ opacity: 0, y: 16 }}
+            animate={{ opacity: 1, y: 0 }}
+            transition={{ duration: 0.4 }}
+            className="flex w-full flex-col items-center gap-6 text-center"
+          >
+            <div className="flex h-20 w-20 items-center justify-center rounded-2xl bg-accent/10">
+              <Building2 className="h-10 w-10 text-accent" />
+            </div>
+
+            <div>
+              <h2 className="text-2xl font-bold text-foreground">Verify your income</h2>
+              <p className="mt-2 text-muted-foreground">
+                Connect your bank so we can calculate your credit score. It only takes 30 seconds.
+              </p>
+            </div>
+
+            <div className="w-full space-y-3">
+              <Button
+                variant="accent"
+                size="lg"
+                className="w-full"
+                onClick={startPlaidLink}
+                disabled={fetchingLinkToken || !publicKey}
+              >
+                {fetchingLinkToken ? (
+                  <><Loader2 className="mr-2 h-5 w-5 animate-spin" /> Connecting…</>
+                ) : (
+                  <><Building2 className="mr-2 h-5 w-5" /> Connect Bank Account</>
+                )}
+              </Button>
+
+              <button
+                onClick={() => setStep(1)}
+                className="w-full py-2 text-sm text-muted-foreground underline-offset-2 hover:text-foreground hover:underline"
+              >
+                I'll do this later
+              </button>
+            </div>
+
+            <div className="space-y-1.5">
+              <p className="text-xs text-muted-foreground/60">
+                Powered by Plaid · Bank-grade security · Read-only access
+              </p>
+              <p className="text-xs text-muted-foreground/40">
+                Sandbox: use <span className="font-mono">user_good / pass_good</span>
+              </p>
+            </div>
+          </motion.div>
+        </div>
+      </MobileLayout>
+    );
+  }
+
+  // Step 1: Deposit amount
   return (
     <MobileLayout showNav={false}>
       <div className="flex h-full flex-col px-5 pt-12">
         {/* Header */}
         <div className="mb-6 flex items-center gap-4">
           <button
-            onClick={() => navigate("/home")}
+            onClick={() => (plaidToken ? navigate("/home") : setStep(0))}
             className="flex h-10 w-10 items-center justify-center rounded-xl bg-secondary transition-colors hover:bg-secondary/80"
           >
             <ArrowLeft className="h-5 w-5 text-foreground" />
           </button>
           <div>
             <h1 className="text-lg font-semibold text-foreground">Deposit USDC</h1>
-            <p className="text-sm text-muted-foreground">Earn yield · Build credit score</p>
+            <p className="text-sm text-muted-foreground">
+              {plaidToken ? "Income verified · Build credit score" : "Earn yield · Build credit score"}
+            </p>
           </div>
         </div>
 
@@ -210,7 +366,7 @@ export default function DepositScreen() {
             animate={{ opacity: 1, y: 0 }}
             className="mb-6 rounded-2xl bg-gradient-primary p-5"
           >
-            <p className="text-xs text-primary-foreground/70">Vault balance</p>
+            <p className="text-xs text-primary-foreground/70">Your savings</p>
             <p className="font-financial text-3xl font-bold text-primary-foreground">
               {fmt(vault.usdcDeposited)} <span className="text-base font-normal opacity-70">USDC</span>
             </p>
@@ -220,14 +376,40 @@ export default function DepositScreen() {
                 <p className="font-financial text-lg font-bold text-primary-foreground">{vault.score}</p>
               </div>
               <div>
-                <p className="text-xs text-primary-foreground/60">Tier</p>
+                <p className="text-xs text-primary-foreground/60">Grade</p>
                 <p className="font-financial text-lg font-bold text-primary-foreground">{vault.scoreTier}</p>
               </div>
               <div>
-                <p className="text-xs text-primary-foreground/60">Free USDC</p>
+                <p className="text-xs text-primary-foreground/60">Available</p>
                 <p className="font-financial text-lg font-bold text-primary-foreground">{fmt(vault.usdcFree)}</p>
               </div>
             </div>
+          </motion.div>
+        )}
+
+        {/* Devnet faucet — visible when user has no USDC yet */}
+        {publicKey && (vault?.usdcDeposited ?? 0) === 0 && (
+          <motion.div
+            initial={{ opacity: 0, y: 8 }}
+            animate={{ opacity: 1, y: 0 }}
+            transition={{ delay: 0.05 }}
+            className="mb-4"
+          >
+            <button
+              onClick={handleAirdrop}
+              disabled={airdropLoading || loading}
+              className="w-full rounded-2xl border border-accent/30 bg-accent/5 py-3.5 text-sm font-semibold text-accent transition-colors hover:bg-accent/10 disabled:opacity-50"
+            >
+              {airdropLoading ? (
+                <span className="flex items-center justify-center gap-2">
+                  <Loader2 className="h-4 w-4 animate-spin" />
+                  Sending test USDC…
+                </span>
+              ) : (
+                "Get $10 test USDC"
+              )}
+            </button>
+            <p className="mt-1.5 text-center text-xs text-muted-foreground">Free devnet funds · 1 request per hour</p>
           </motion.div>
         )}
 
@@ -266,8 +448,8 @@ export default function DepositScreen() {
           <Coins className="mt-0.5 h-5 w-5 flex-shrink-0 text-avere-600" />
           <div className="text-sm text-muted-foreground space-y-1">
             <p><span className="font-medium text-foreground">+15 score pts</span> awarded on every deposit</p>
-            <p>Free USDC earns yield via Kamino Lend while unlocked</p>
-            <p>USDC stays available as optional loan collateral</p>
+            <p>Your savings earn yield while unlocked</p>
+            <p>Available as optional collateral to lower your loan rate</p>
           </div>
         </motion.div>
 
@@ -351,7 +533,7 @@ export default function DepositScreen() {
           className="mb-6 flex items-center gap-2 text-xs text-muted-foreground"
         >
           <Info className="h-3.5 w-3.5 flex-shrink-0" />
-          <span>Deposit unlocks the Loan tab. Score is fetched after deposit.</span>
+          <span>Deposit unlocks the Borrow tab. Score is fetched after deposit.</span>
         </motion.div>
       </div>
     </MobileLayout>

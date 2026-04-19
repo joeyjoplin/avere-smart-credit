@@ -55,9 +55,15 @@ export interface InstallmentsResponse {
 
 // ── API calls ─────────────────────────────────────────────────────────────────
 
-export async function fetchScore(wallet: string, plaidToken?: string): Promise<ScoreResponse> {
+export async function fetchScore(
+  wallet: string,
+  plaidToken?: string,
+  relationshipMonths?: number,
+): Promise<ScoreResponse> {
   const params = new URLSearchParams({ wallet });
   if (plaidToken) params.set("plaid_token", plaidToken);
+  if (relationshipMonths !== undefined && relationshipMonths > 0)
+    params.set("relationship_months", String(relationshipMonths));
   const res = await fetch(`${SCORE_API}/score?${params}`);
   if (!res.ok) {
     const err = await res.json().catch(() => ({}));
@@ -123,6 +129,21 @@ export async function fetchScoreExplain(wallet: string): Promise<ScoreExplainRes
   if (!res.ok) {
     const err = await res.json().catch(() => ({}));
     throw new Error(err.detail ?? `Score explain error ${res.status}`);
+  }
+  return res.json();
+}
+
+// ── Devnet faucet ─────────────────────────────────────────────────────────────
+
+export async function requestAirdropUsdc(wallet: string): Promise<{ signature: string; amount_usdc: number }> {
+  const res = await fetch(`${SCORE_API}/devnet/airdrop-usdc`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ wallet, amount_usdc: 10 }),
+  });
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({}));
+    throw new Error(err.detail ?? `Airdrop failed: ${res.status}`);
   }
   return res.json();
 }

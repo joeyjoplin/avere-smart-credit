@@ -1,6 +1,6 @@
 import { useState, useEffect, useCallback } from "react";
 import { motion, AnimatePresence } from "framer-motion";
-import { ArrowLeft, AlertCircle, Check, Wallet, Percent, Calculator, FileText, Loader2, Building2 } from "lucide-react";
+import { ArrowLeft, AlertCircle, Check, Wallet, Calculator, FileText, Loader2, Building2 } from "lucide-react";
 import { useNavigate } from "react-router-dom";
 import { useWallet } from "@solana/wallet-adapter-react";
 import {
@@ -475,9 +475,9 @@ export default function LoanFlow() {
                 <div className="rounded-2xl bg-card p-6 shadow-card">
                   <div className="flex items-center justify-between">
                     <div>
-                      <h3 className="font-semibold text-foreground">Use Vault USDC as Collateral?</h3>
+                      <h3 className="font-semibold text-foreground">Use your savings as collateral to lower your rate?</h3>
                       <p className="mt-1 text-sm text-muted-foreground">
-                        Reduce your rate · Free: {fmt(usdcFreeDisplay)}
+                        Available: {fmt(usdcFreeDisplay)}
                       </p>
                     </div>
                     <Switch
@@ -494,21 +494,10 @@ export default function LoanFlow() {
                 <AnimatePresence>
                   {useCollateral && (
                     <motion.div initial={{ opacity: 0, height: 0 }} animate={{ opacity: 1, height: "auto" }} exit={{ opacity: 0, height: 0 }} transition={{ duration: 0.3 }} className="space-y-4 overflow-hidden">
-                      <div className="flex items-center gap-3 rounded-xl bg-avere-50 p-4">
-                        <div className="flex h-10 w-10 items-center justify-center rounded-full bg-accent/15">
-                          <Percent className="h-5 w-5 text-accent" />
-                        </div>
-                        <div>
-                          <p className="text-sm font-medium text-foreground">
-                            -{" "}4% DeFi tranche discount
-                          </p>
-                          <p className="text-xs text-muted-foreground">Blended rate shown on Step 4</p>
-                        </div>
-                      </div>
                       <div className="rounded-xl bg-card p-4 shadow-soft">
                         <div className="flex items-center gap-3 text-muted-foreground">
                           <Wallet className="h-5 w-5" />
-                          <span className="text-sm">Vault Free Balance</span>
+                          <span className="text-sm">Your savings balance</span>
                         </div>
                         <p className="mt-2 font-financial text-2xl font-bold text-foreground">
                           {fmt(usdcFreeDisplay)} <span className="text-sm font-normal text-muted-foreground">USDC</span>
@@ -534,6 +523,11 @@ export default function LoanFlow() {
             {/* Step 4: Term + Live calculation */}
             {step === 4 && (
               <motion.div key="step4" variants={stepVariants} initial="enter" animate="center" exit="exit" transition={{ duration: 0.3 }} className="space-y-6">
+                {useCollateral && collateralAmount > 0 && (
+                  <div className="rounded-xl border border-accent/20 bg-accent/5 px-4 py-3 text-sm text-muted-foreground">
+                    Your loan is split between your deposited USDC (lower rate) and our lending pool (standard rate). You make one monthly payment at the blended rate below.
+                  </div>
+                )}
                 <div className="rounded-2xl bg-card p-6 shadow-card">
                   <h3 className="font-semibold text-foreground">Select Installments</h3>
                   <p className="mt-1 text-sm text-muted-foreground">Choose your repayment period</p>
@@ -558,17 +552,9 @@ export default function LoanFlow() {
                       <span className="font-financial text-xl font-bold text-foreground">{fmt(monthlyPaymentDisplay)}</span>
                     </div>
                     <div className="flex items-center justify-between rounded-xl bg-card p-4 shadow-soft">
-                      <span className="text-sm text-muted-foreground">Blended Rate</span>
-                      <span className="font-financial text-xl font-bold text-accent">{blendedRateApr.toFixed(2)}%</span>
+                      <span className="text-sm text-muted-foreground">Your rate</span>
+                      <span className="font-financial text-xl font-bold text-accent">{blendedRateApr.toFixed(2)}% APR</span>
                     </div>
-                    {schedule && schedule.hybrid_defi_pct > 0 && (
-                      <div className="flex items-center justify-between rounded-xl bg-avere-50 p-4">
-                        <span className="text-sm text-muted-foreground">Hybrid split</span>
-                        <span className="text-sm font-medium text-foreground">
-                          {schedule.hybrid_defi_pct}% DeFi · {schedule.hybrid_trad_pct}% Trad
-                        </span>
-                      </div>
-                    )}
                     <div className="flex items-center justify-between rounded-xl bg-avere-50 p-4">
                       <span className="text-sm font-medium text-foreground">Total Repayment</span>
                       <span className="font-financial text-xl font-bold text-foreground">{fmt(totalRepayDisplay)}</span>
@@ -589,8 +575,8 @@ export default function LoanFlow() {
                   <div className="mt-6 space-y-4">
                     {[
                       ["Loan Amount", fmt(loanAmount)],
-                      ["Blended Rate", `${blendedRateApr.toFixed(2)}% APR`],
-                      ["Installments", `${nMonths} months`],
+                      ["Your rate", `${blendedRateApr.toFixed(2)}% APR`],
+                      ["Monthly payments", `${nMonths} months`],
                       ["Monthly Payment", fmt(monthlyPaymentDisplay)],
                     ].map(([label, value]) => (
                       <div key={label} className="flex items-center justify-between border-b border-primary-foreground/20 pb-3">
@@ -598,14 +584,6 @@ export default function LoanFlow() {
                         <span className="font-financial text-lg font-semibold text-primary-foreground">{value}</span>
                       </div>
                     ))}
-                    {schedule && schedule.hybrid_defi_pct > 0 && (
-                      <div className="flex items-center justify-between border-b border-primary-foreground/20 pb-3">
-                        <span className="text-sm text-primary-foreground/70">Hybrid split</span>
-                        <span className="text-sm font-semibold text-primary-foreground">
-                          {schedule.hybrid_defi_pct}% DeFi · {schedule.hybrid_trad_pct}% Trad
-                        </span>
-                      </div>
-                    )}
                     <div className="flex items-center justify-between pt-2">
                       <span className="text-sm font-medium text-primary-foreground">Total Repayment</span>
                       <span className="font-financial text-2xl font-bold text-primary-foreground">{fmt(totalRepayDisplay)}</span>

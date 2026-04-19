@@ -9,6 +9,7 @@ import Index from "./pages/Index";
 import HomeScreen from "./pages/HomeScreen";
 import Dashboard from "./pages/Dashboard";
 import LoanFlow from "./pages/LoanFlow";
+import LoansPage from "./pages/LoansPage";
 import Earn from "./pages/Earn";
 import Payments from "./pages/Payments";
 import DepositScreen from "./pages/DepositScreen";
@@ -38,6 +39,7 @@ const App = () => (
             <Route path="/onboarding" element={<RequireWallet><Onboarding /></RequireWallet>} />
             <Route path="/deposit" element={<RequireWallet><DepositScreen /></RequireWallet>} />
             <Route path="/dashboard" element={<RequireWallet><Dashboard /></RequireWallet>} />
+            <Route path="/loans" element={<RequireWallet><LoansPage /></RequireWallet>} />
             <Route path="/loan" element={<RequireWallet><LoanFlow /></RequireWallet>} />
             <Route path="/earn" element={<RequireWallet><Earn /></RequireWallet>} />
             <Route path="/payments" element={<RequireWallet><Payments /></RequireWallet>} />

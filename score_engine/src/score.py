@@ -1,11 +1,14 @@
 """
 score.py — Avere credit scoring model
 
-Weights (US calibration, thin-file users):
-  cashflow:        0.30  (Plaid bank transactions)
-  income:          0.35  (Argyle/Pinwheel payroll — highest weight)
-  onchain:         0.20  (Solana wallet behavior)
-  payment_history: 0.15  (Avere repayment history — neutral baseline for new users)
+Evolutionary weight model (US calibration, thin-file users):
+  Weights shift from FICO-proxy-heavy (month 0) to Avere-behavior-heavy (month 36+).
+
+  Month 0  (new user):     cashflow=40%  income=30%  onchain=20%  payment_history=10%
+  Month 36 (established):  cashflow= 5%  income=25%  onchain=20%  payment_history=50%
+
+  Linearly interpolated via get_weights(relationship_months).
+  This makes the model self-improving: users who stay and repay are rewarded over time.
 
 New users receive payment_history_score = PAYMENT_HISTORY_BASELINE (500) instead of 0,
 so they are not penalized for having no Avere loan history yet.
@@ -36,14 +39,26 @@ DEFI_PROTOCOL_MAX       = 4      # 4+ unique DeFi protocols → max diversity sc
 LP_EVENTS_MAX           = 5      # 5+ LP add/remove events → max LP score
 USDC_INFLOW_MAX         = 15     # 15+ USDC inflows in 90d → max inflow score
 
-# ── Scoring weights ───────────────────────────────────────────────────────────
+# ── Evolutionary weight schedule ──────────────────────────────────────────────
+# Tuple order: (cashflow, income, onchain, payment_history)
+# Weights at month 0 are FICO-proxy-heavy; by month 36 Avere behavior dominates.
 
-WEIGHTS = {
-    "cashflow":        0.30,
-    "income":          0.35,
-    "onchain":         0.20,
-    "payment_history": 0.15,
+WEIGHT_SCHEDULE: dict[int, tuple[float, float, float, float]] = {
+    0:  (0.40, 0.30, 0.20, 0.10),
+    36: (0.05, 0.25, 0.20, 0.50),
 }
+
+
+def get_weights(relationship_months: int) -> dict[str, float]:
+    """Return linearly interpolated weights clamped to [month 0, month 36]."""
+    t = min(max(relationship_months, 0), 36) / 36.0
+    w0, w36 = WEIGHT_SCHEDULE[0], WEIGHT_SCHEDULE[36]
+    return {
+        "cashflow":        w0[0] + t * (w36[0] - w0[0]),
+        "income":          w0[1] + t * (w36[1] - w0[1]),
+        "onchain":         w0[2] + t * (w36[2] - w0[2]),
+        "payment_history": w0[3] + t * (w36[3] - w0[3]),
+    }
 
 # ── Tier config ───────────────────────────────────────────────────────────────
 
@@ -290,7 +305,7 @@ def macro_risk_multiplier(macro: dict) -> float:
 
 # ── Main scoring function ─────────────────────────────────────────────────────
 
-def compute_score(profile: dict, macro: dict) -> dict:
+def compute_score(profile: dict, macro: dict, relationship_months: int = 0) -> dict:
     """
     Compute Avere credit score from a merged profile dict and macro indicators.
 
@@ -307,6 +322,8 @@ def compute_score(profile: dict, macro: dict) -> dict:
     Macro shape (from FRED API):
       { "fed_funds": float, "cpi": float, "unemployment": float }
 
+    relationship_months: months since vault creation — drives evolutionary weight shift.
+
     Returns:
       { "score": int, "tier": str, "breakdown": { ... } }
     """
@@ -320,12 +337,13 @@ def compute_score(profile: dict, macro: dict) -> dict:
     o_score = onchain_score(onchain)
     p_score = payment_history_score(history)
     mult    = macro_risk_multiplier(macro)
+    weights = get_weights(relationship_months)
 
     raw = (
-        WEIGHTS["cashflow"]        * c_score +
-        WEIGHTS["income"]          * i_score +
-        WEIGHTS["onchain"]         * o_score +
-        WEIGHTS["payment_history"] * p_score
+        weights["cashflow"]        * c_score +
+        weights["income"]          * i_score +
+        weights["onchain"]         * o_score +
+        weights["payment_history"] * p_score
     )
 
     final = int(min(raw * mult, 1000.0))
