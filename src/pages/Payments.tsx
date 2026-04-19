@@ -3,6 +3,7 @@ import { motion } from "framer-motion";
 import { Calendar, CheckCircle2, Clock, Loader2 } from "lucide-react";
 import MobileLayout from "@/components/layout/MobileLayout";
 import { Button } from "@/components/ui/button";
+import { useNavigate } from "react-router-dom";
 import { useWallet } from "@solana/wallet-adapter-react";
 import {
   createAssociatedTokenAccountInstruction,
@@ -14,6 +15,7 @@ import { Transaction, PublicKey } from "@solana/web3.js";
 import { useProgram } from "@/hooks/useProgram";
 import { useVault } from "@/hooks/useVault";
 import { useActiveLoan } from "@/hooks/useActiveLoan";
+import { usePlaidToken } from "@/hooks/usePlaidToken";
 import { fetchOraclePubkey, requestOracleSignature, fetchScore } from "@/lib/score-api";
 import {
   connection,
@@ -39,10 +41,12 @@ function daysUntil(ts: number): string {
 }
 
 export default function Payments() {
+  const navigate = useNavigate();
   const { publicKey, sendTransaction } = useWallet();
   const program = useProgram();
   const { data: vault, refetch: refetchVault } = useVault();
   const { data: loan, refetch: refetchLoan } = useActiveLoan();
+  const { token: plaidToken } = usePlaidToken(publicKey?.toBase58() ?? null);
   const [payingIndex, setPayingIndex] = useState<number | null>(null);
 
   async function ensureUserAta(): Promise<PublicKey> {
@@ -95,7 +99,7 @@ export default function Payments() {
       else if (now - dueTs < 7 * 86400) delta = -20;
       else delta = -50;
 
-      const engineScore = await fetchScore(publicKey.toBase58());
+      const engineScore = await fetchScore(publicKey.toBase58(), plaidToken ?? undefined);
       const newScore = Math.max(0, Math.min(1000, engineScore.score + delta));
       const oraclePubkey = await fetchOraclePubkey();
       const scoreTx = await program.methods
@@ -108,6 +112,17 @@ export default function Payments() {
       const oracleSignedTx = await requestOracleSignature(publicKey.toBase58(), newScore, scoreTx);
       const scoreSig = await sendTransaction(oracleSignedTx, connection);
       await connection.confirmTransaction({ signature: scoreSig, blockhash, lastValidBlockHeight }, "confirmed");
+
+      // Close the loan PDA if this was the last installment so the next loan can reuse the slot
+      const isLastPayment = (loan.paidCount + 1) === loan.nInstallments;
+      if (isLastPayment) {
+        const closeTx = await program.methods
+          .closeLoan()
+          .accounts({ vault: vaultPDA, loan: loanPDA })
+          .transaction();
+        const closeSig = await sendTransaction(closeTx, connection);
+        await connection.confirmTransaction(closeSig, "confirmed");
+      }
 
       appendHistory(publicKey.toBase58(), {
         type: "payment",
@@ -157,6 +172,40 @@ export default function Payments() {
 
   const installments = loan.installments ?? [];
   const paid = installments.filter((i) => i.paid).length;
+
+  if (paid === installments.length && installments.length > 0) {
+    return (
+      <MobileLayout>
+        <div className="flex h-full flex-col items-center justify-center gap-3 px-5 py-8 text-center">
+          <motion.div
+            initial={{ scale: 0.5, opacity: 0 }}
+            animate={{ scale: 1, opacity: 1 }}
+            transition={{ type: "spring", stiffness: 200, damping: 15 }}
+          >
+            <CheckCircle2 className="h-14 w-14 text-accent" />
+          </motion.div>
+          <motion.div
+            initial={{ opacity: 0, y: 8 }}
+            animate={{ opacity: 1, y: 0 }}
+            transition={{ delay: 0.2 }}
+          >
+            <h2 className="text-xl font-bold text-foreground">Loan fully repaid!</h2>
+            <p className="mt-1 text-sm text-muted-foreground">Your on-chain credit history has been updated.</p>
+          </motion.div>
+          <motion.div
+            initial={{ opacity: 0, y: 8 }}
+            animate={{ opacity: 1, y: 0 }}
+            transition={{ delay: 0.35 }}
+            className="mt-2 w-full"
+          >
+            <Button variant="accent" className="w-full" onClick={() => navigate("/dashboard")}>
+              Back to Dashboard
+            </Button>
+          </motion.div>
+        </div>
+      </MobileLayout>
+    );
+  }
 
   return (
     <MobileLayout>

@@ -47,7 +47,7 @@ def compute_hybrid_split(
         defi_pct = min(int(collateral_ratio * 100), max_defi_pct)
 
     trad_pct      = 100 - defi_pct
-    defi_rate_bps = base_rate_bps - COLLATERAL_DISCOUNT_BPS
+    defi_rate_bps = max(0, base_rate_bps - COLLATERAL_DISCOUNT_BPS)
     trad_rate_bps = base_rate_bps
     blended_bps   = int((defi_pct / 100) * defi_rate_bps + (trad_pct / 100) * trad_rate_bps)
 

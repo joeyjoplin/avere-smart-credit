@@ -31,6 +31,10 @@ WALLET_BALANCE_MAX_USDC = 600    # avg USDC balance ≥ $600 → max score
 WALLET_AGE_MAX_DAYS     = 365    # wallet age ≥ 1 year → max score
 TX_PER_MONTH_MAX        = 20     # ≥ 20 inbound tx/month → max score
 PAYMENT_HISTORY_BASELINE = 500   # score for users with no Avere loan history (neutral)
+# Enhanced on-chain feature ceilings (from /score/onchain-analysis)
+DEFI_PROTOCOL_MAX       = 4      # 4+ unique DeFi protocols → max diversity score
+LP_EVENTS_MAX           = 5      # 5+ LP add/remove events → max LP score
+USDC_INFLOW_MAX         = 15     # 15+ USDC inflows in 90d → max inflow score
 
 # ── Scoring weights ───────────────────────────────────────────────────────────
 
@@ -201,13 +205,51 @@ def _tx_frequency_score(onchain: dict) -> float:
     return _norm(tx, 0, TX_PER_MONTH_MAX)
 
 
+def _defi_diversity_score(onchain: dict) -> float:
+    """Unique DeFi protocols used. Wider protocol usage = more sophisticated DeFi user."""
+    return _norm(onchain.get("defi_protocol_count", 0), 0, DEFI_PROTOCOL_MAX)
+
+
+def _lp_history_score(onchain: dict) -> float:
+    """Liquidity provision events. LP participants have deep DeFi commitment."""
+    return _norm(onchain.get("lp_events_count", 0), 0, LP_EVENTS_MAX)
+
+
+def _usdc_inflow_score(onchain: dict) -> float:
+    """
+    USDC inflow count weighted by regularity.
+    Regular, frequent inflows signal stable on-chain income (gig payout via DeFi).
+    """
+    count      = _norm(onchain.get("usdc_inflow_count", 0), 0, USDC_INFLOW_MAX)
+    regularity = onchain.get("usdc_inflow_regularity", 0.0) * 1000.0
+    return 0.60 * count + 0.40 * regularity
+
+
 def onchain_score(onchain: dict) -> float:
-    """Composite on-chain score from Helius Solana wallet data."""
-    return (
+    """
+    Composite on-chain score from Helius Solana wallet data.
+
+    When enhanced features (from /score/onchain-analysis) are present, their
+    signals replace 40% of the base score weight for a richer picture of DeFi
+    engagement. Without enhanced data the original three-factor model is used.
+    """
+    base = (
         0.40 * _wallet_balance_score(onchain) +
         0.30 * _wallet_age_score(onchain) +
         0.30 * _tx_frequency_score(onchain)
     )
+
+    has_enhanced = "defi_protocol_count" in onchain
+    if not has_enhanced:
+        return base
+
+    enhanced = (
+        0.40 * _defi_diversity_score(onchain) +
+        0.35 * _lp_history_score(onchain) +
+        0.25 * _usdc_inflow_score(onchain)
+    )
+    # 60% basic signals + 40% enhanced DeFi signals
+    return 0.60 * base + 0.40 * enhanced
 
 
 # ── Payment history (Avere on-chain repayment events) ────────────────────────

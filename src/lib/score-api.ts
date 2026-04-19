@@ -107,6 +107,26 @@ export async function fetchInstallments(
   return res.json();
 }
 
+export interface ScoreExplainFactor {
+  name:      string;
+  insight:   string;
+  direction: "up" | "down" | "neutral";
+}
+
+export interface ScoreExplainResponse {
+  summary: string;
+  factors: ScoreExplainFactor[];
+}
+
+export async function fetchScoreExplain(wallet: string): Promise<ScoreExplainResponse> {
+  const res = await fetch(`${SCORE_API}/score/explain?wallet=${encodeURIComponent(wallet)}`);
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({}));
+    throw new Error(err.detail ?? `Score explain error ${res.status}`);
+  }
+  return res.json();
+}
+
 // ── Oracle signing helpers ────────────────────────────────────────────────────
 
 /** Returns the score engine oracle's public key. */

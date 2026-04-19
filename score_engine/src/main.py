@@ -2,6 +2,7 @@ import base64
 import hashlib
 import json
 import os
+import time
 from pathlib import Path
 import httpx
 from dotenv import load_dotenv
@@ -48,9 +49,11 @@ app = FastAPI(
 from passkey_routes import router as passkey_router  # noqa: E402
 app.include_router(passkey_router)
 
-# In-memory score cache: wallet → score. Populated by GET /score, read by sign-update-score
-# so oracle can validate sandbox/live scores without a full re-fetch.
-_score_cache: dict[str, int] = {}
+# In-memory caches populated by GET /score.
+_score_cache: dict[str, int] = {}                # wallet → score int
+_breakdown_cache: dict[str, dict] = {}            # wallet → full breakdown dict
+_onchain_analysis_cache: dict[str, tuple[dict, float]] = {}  # wallet → (result, epoch_s)
+_ONCHAIN_TTL = 3600.0  # 1 hour — avoids Helius rate limits
 
 # ── CORS ──────────────────────────────────────────────────────────────────────
 # Allow frontend origins. Override via CORS_ORIGINS env var (comma-separated).
@@ -170,6 +173,7 @@ async def get_score(
     result = compute_score(profile, macro)
     response = build_score_response(result, macro["fed_funds_upper_bps"])
     _score_cache[wallet] = response["score"]
+    _breakdown_cache[wallet] = result["breakdown"]
     return response
 
 
@@ -227,12 +231,21 @@ def _load_mock_profile(wallet: str) -> dict:
 async def _fetch_plaid_and_onchain(
     plaid_token: str, plaid_env: str, wallet: str
 ) -> tuple[dict, dict]:
-    """Fetch Plaid and Helius data concurrently. Translates upstream errors to 502."""
+    """
+    Fetch Plaid and Helius data concurrently.
+    Enhanced on-chain features are merged in from cache or fetched fresh.
+    """
     import asyncio
+    from onchain_data import fetch_helius_enhanced_data
     try:
-        plaid_task  = asyncio.create_task(fetch_plaid_data(plaid_token, plaid_env))
-        helius_task = asyncio.create_task(fetch_helius_data(wallet))
-        plaid_data, onchain_data = await asyncio.gather(plaid_task, helius_task)
+        plaid_task    = asyncio.create_task(fetch_plaid_data(plaid_token, plaid_env))
+        helius_task   = asyncio.create_task(fetch_helius_data(wallet))
+        enhanced_task = asyncio.create_task(fetch_helius_enhanced_data(wallet))
+        plaid_data, onchain_data, enhanced = await asyncio.gather(
+            plaid_task, helius_task, enhanced_task
+        )
+        onchain_data = {**onchain_data, **enhanced}  # merge enhanced features
+        _onchain_analysis_cache[wallet] = (enhanced, time.time())
         return plaid_data, onchain_data
     except ValueError as exc:
         raise HTTPException(status_code=503, detail=str(exc)) from exc
@@ -467,6 +480,169 @@ async def sign_update_score(body: SignUpdateScoreRequest):
         return {"signed_tx_base64": base64.b64encode(bytes(tx_with_oracle)).decode()}
     except Exception as exc:
         raise HTTPException(status_code=400, detail=f"Transaction signing failed: {exc}") from exc
+
+
+# ── GET /score/onchain-analysis ──────────────────────────────────────────────
+
+class OnchainAnalysisResponse(BaseModel):
+    wallet:                 str        = Field(..., description="Solana wallet address analyzed")
+    defi_protocol_count:    int        = Field(..., description="Unique DeFi protocols used in last 90 days")
+    defi_protocols:         list[str]  = Field(..., description="Protocol names (e.g. RAYDIUM, JUPITER)")
+    lp_events_count:        int        = Field(..., description="LP add/remove events in last 90 days")
+    usdc_inflow_count:      int        = Field(..., description="Inbound USDC transfers in last 90 days")
+    usdc_inflow_regularity: float      = Field(..., description="Income regularity 0–1 (1=salary-like, 0=erratic)")
+    onchain_score_preview:  int        = Field(..., description="Estimated onchain sub-score with enhanced features (0–1000)")
+    cached:                 bool       = Field(..., description="True if result served from 1-hour cache")
+
+@app.get("/score/onchain-analysis", response_model=OnchainAnalysisResponse)
+async def get_onchain_analysis(
+    wallet: str = Query(..., description="Solana public key (base58)"),
+):
+    """
+    AI feature extraction via Helius Enhanced Transactions.
+
+    Extracts DeFi protocol diversity, LP history, and USDC inflow patterns from
+    the wallet's last 90 days of on-chain activity. The returned features are
+    consumed by onchain_score() to enrich the scoring model beyond basic
+    wallet age / balance / tx frequency.
+
+    Results are cached per wallet for 1 hour to avoid Helius rate limits.
+    Returns zeros (not an error) when HELIUS_API_KEY is not configured.
+    """
+    from onchain_data import fetch_helius_enhanced_data
+    from score import onchain_score, DEFI_PROTOCOL_MAX, LP_EVENTS_MAX, USDC_INFLOW_MAX
+
+    def _preview(features: dict) -> int:
+        """Estimate onchain sub-score using only enhanced signals (0–1000)."""
+        def _n(v: float, mx: float) -> float:
+            return max(0.0, min(1000.0, v / mx * 1000.0)) if mx > 0 else 0.0
+        diversity = _n(features.get("defi_protocol_count", 0), DEFI_PROTOCOL_MAX)
+        lp        = _n(features.get("lp_events_count",      0), LP_EVENTS_MAX)
+        inflow_c  = _n(features.get("usdc_inflow_count",    0), USDC_INFLOW_MAX)
+        regularity= features.get("usdc_inflow_regularity",  0.0) * 1000.0
+        usdc_s    = 0.60 * inflow_c + 0.40 * regularity
+        return int(0.40 * diversity + 0.35 * lp + 0.25 * usdc_s)
+
+    now = time.time()
+    cached_entry = _onchain_analysis_cache.get(wallet)
+    if cached_entry and (now - cached_entry[1]) < _ONCHAIN_TTL:
+        result = cached_entry[0]
+        return {**result, "wallet": wallet, "onchain_score_preview": _preview(result), "cached": True}
+
+    try:
+        result = await fetch_helius_enhanced_data(wallet)
+    except Exception as exc:
+        raise HTTPException(status_code=502, detail=f"Helius analysis failed: {exc}") from exc
+
+    _onchain_analysis_cache[wallet] = (result, now)
+    return {**result, "wallet": wallet, "onchain_score_preview": _preview(result), "cached": False}
+
+
+# ── GET /score/explain ────────────────────────────────────────────────────────
+
+_FICO_MAP = {
+    "A": ("800–1000", "720+",      "prime"),
+    "B": ("600–799",  "650–719",   "near-prime"),
+    "C": ("400–599",  "580–649",   "subprime"),
+    "D": ("0–399",    "below 580", "unscorable"),
+}
+
+_EXPLAIN_SYSTEM = """\
+You are an AI credit analyst for Avere, a neobank for gig workers on Solana.
+Explain a user's credit score in plain English. You MUST:
+1. Only reference numbers from the provided factor JSON — never invent or hallucinate values.
+2. Include the exact FICO-equivalent range provided in the summary sentence.
+3. For each factor give one concrete insight and state direction: "up" (helping score), "down" (hurting), or "neutral".
+4. Keep language simple and encouraging — users are gig workers, not finance experts.
+5. Never expose internal names like "macro_multiplier" — say "current market conditions" instead.
+Respond with ONLY a JSON object matching this schema (no markdown fences):
+{"summary":"...","factors":[{"name":"Cashflow","insight":"...","direction":"up"|"down"|"neutral"},{"name":"Income","insight":"...","direction":"up"|"down"|"neutral"},{"name":"On-chain activity","insight":"...","direction":"up"|"down"|"neutral"},{"name":"Payment history","insight":"...","direction":"up"|"down"|"neutral"}]}\
+"""
+
+class ScoreExplainFactor(BaseModel):
+    name:      str = Field(..., description="Factor display name")
+    insight:   str = Field(..., description="Plain-English explanation of what this factor shows")
+    direction: str = Field(..., description="'up' | 'down' | 'neutral'")
+
+class ScoreExplainResponse(BaseModel):
+    summary: str                       = Field(..., description="One-sentence summary with FICO-equivalent range")
+    factors: list[ScoreExplainFactor]  = Field(..., description="Per-factor insights")
+
+@app.get("/score/explain", response_model=ScoreExplainResponse)
+async def get_score_explain(
+    wallet: str = Query(..., description="Solana public key (base58)"),
+):
+    """
+    Plain-English AI explanation of the wallet's credit score.
+
+    Grounded strictly in the score breakdown — no hallucinated narratives.
+    Calls GET /score first if the wallet has not been scored this session.
+    """
+    import anthropic as _anthropic
+
+    # Resolve breakdown — prefer cache, fall back to re-compute for mock/random
+    breakdown = _breakdown_cache.get(wallet)
+    score_val  = _score_cache.get(wallet)
+
+    if breakdown is None:
+        mode = resolve_score_mode(wallet)
+        if mode == "mock":
+            profile = _load_mock_profile(wallet)
+        elif mode == "random":
+            profile = _build_random_profile(wallet)
+        else:
+            raise HTTPException(
+                status_code=422,
+                detail="Score not yet computed for this wallet. Call GET /score first.",
+            )
+        macro     = await get_macro_indicators()
+        result    = compute_score(profile, macro)
+        breakdown = result["breakdown"]
+        score_val = result["score"]
+        _score_cache[wallet]    = score_val
+        _breakdown_cache[wallet] = breakdown
+
+    score = score_val or 0
+    if   score >= 800: tier = "A"
+    elif score >= 600: tier = "B"
+    elif score >= 400: tier = "C"
+    else:              tier = "D"
+
+    avere_range, fico_range, fico_label = _FICO_MAP[tier]
+
+    user_msg = (
+        f"Score: {score} (Avere range: {avere_range} → FICO equivalent: {fico_range}, {fico_label})\n\n"
+        f"Factor breakdown (each on 0–1000 scale):\n"
+        f"  cashflow_score:        {breakdown['cashflow_score']}\n"
+        f"  income_score:          {breakdown['income_score']}\n"
+        f"  onchain_score:         {breakdown['onchain_score']}\n"
+        f"  payment_history_score: {breakdown['payment_history_score']}\n"
+        f"  macro_multiplier:      {breakdown['macro_multiplier']}\n\n"
+        f"Weights: cashflow 30%, income 35%, on-chain 20%, payment history 15%."
+    )
+
+    try:
+        client  = _anthropic.Anthropic()
+        message = client.messages.create(
+            model="claude-sonnet-4-6",
+            max_tokens=512,
+            system=_EXPLAIN_SYSTEM,
+            messages=[{"role": "user", "content": user_msg}],
+        )
+        raw = message.content[0].text.strip()
+        data = json.loads(raw)
+    except json.JSONDecodeError as exc:
+        raise HTTPException(status_code=500, detail=f"AI returned non-JSON: {exc}") from exc
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"AI explanation failed: {exc}") from exc
+
+    # Validate factors reference only real breakdown values (direction must be one of 3 valid values)
+    valid_directions = {"up", "down", "neutral"}
+    for f in data.get("factors", []):
+        if f.get("direction") not in valid_directions:
+            f["direction"] = "neutral"
+
+    return data
 
 
 # ── GET /health ───────────────────────────────────────────────────────────────

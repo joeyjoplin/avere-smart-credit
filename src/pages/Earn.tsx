@@ -40,7 +40,6 @@ const Earn = () => {
 
   const score = vault?.score ?? scoreData?.score ?? 0;
   const scoreTier = vault?.scoreTier ?? scoreData?.tier ?? "D";
-  const usdcDeposited = vault?.usdcDeposited ?? 0;
   const usdcFree = vault?.usdcFree ?? 0;
 
   async function ensureUserAta(): Promise<PublicKey> {
@@ -184,15 +183,11 @@ const Earn = () => {
         {vault?.exists && (
           <motion.div initial={{ opacity: 0, y: 16 }} animate={{ opacity: 1, y: 0 }} transition={{ duration: 0.4, delay: 0.15 }} className="mb-6 flex gap-3">
             <div className="flex-1 rounded-xl bg-avere-50 p-3">
-              <p className="text-xs text-muted-foreground">USDC Deposited</p>
-              <p className="font-financial text-lg font-bold text-foreground">{fmt(usdcDeposited)}</p>
-            </div>
-            <div className="flex-1 rounded-xl bg-avere-50 p-3">
               <p className="text-xs text-muted-foreground">Kamino APY</p>
               <p className="font-financial text-lg font-bold text-accent">{KAMINO_APY}%</p>
             </div>
             <div className="flex-1 rounded-xl bg-avere-50 p-3">
-              <p className="text-xs text-muted-foreground">Free USDC</p>
+              <p className="text-xs text-muted-foreground">Available</p>
               <p className="font-financial text-lg font-bold text-foreground">{fmt(usdcFree)}</p>
             </div>
           </motion.div>

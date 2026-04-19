@@ -1,6 +1,6 @@
 import { useState, useEffect, useCallback } from "react";
 import { motion, AnimatePresence } from "framer-motion";
-import { ArrowLeft, Check, Wallet, Percent, Calculator, FileText, Loader2, Building2 } from "lucide-react";
+import { ArrowLeft, AlertCircle, Check, Wallet, Percent, Calculator, FileText, Loader2, Building2 } from "lucide-react";
 import { useNavigate } from "react-router-dom";
 import { useWallet } from "@solana/wallet-adapter-react";
 import {
@@ -22,7 +22,7 @@ import { useVault } from "@/hooks/useVault";
 import { useScore } from "@/hooks/useScore";
 import { usePlaidToken } from "@/hooks/usePlaidToken";
 import { useQueryClient } from "@tanstack/react-query";
-import { fetchInstallments, fetchPlaidLinkToken, exchangePlaidToken } from "@/lib/score-api";
+import { fetchInstallments, fetchPlaidLinkToken, exchangePlaidToken, fetchOraclePubkey, requestOracleSignature } from "@/lib/score-api";
 import type { InstallmentsResponse } from "@/lib/score-api";
 import {
   connection,
@@ -53,7 +53,7 @@ export default function LoanFlow() {
   const queryClient = useQueryClient();
 
   const [step, setStep] = useState(1);
-  const [loanAmount, setLoanAmount] = useState(3);
+  const [loanAmount, setLoanAmount] = useState(0);
   const [useCollateral, setUseCollateral] = useState(false);
   const [collateralAmount, setCollateralAmount] = useState(0);
   const [nMonths, setNMonths] = useState(6);
@@ -117,9 +117,18 @@ export default function LoanFlow() {
   const minLoanUsdc = scoreData?.min_loan_usdc ?? 50 * 1e6;
   const maxLoan = fromUsdc(maxLoanUsdc);
   const minLoan = fromUsdc(minLoanUsdc);
+  const loanStep = maxLoan - minLoan <= 50 ? 0.5 : 50;
   const baseRateBps = scoreData?.base_rate_bps ?? 975;
   const scoreTier = scoreData?.tier ?? vault?.scoreTier ?? "D";
   const usdcFreeDisplay = vault?.usdcFree ?? 0;
+
+  // Initialize loan amount once score data resolves (avoid magic number / clamping issues)
+  useEffect(() => {
+    if (!scoreData || loanAmount !== 0) return;
+    const max = fromUsdc(scoreData.max_loan_usdc);
+    const min = fromUsdc(scoreData.min_loan_usdc);
+    if (max > 0) setLoanAmount(min);
+  }, [scoreData, loanAmount]);
 
   // Redirect if vault missing — but don't redirect for tier D anymore (show Plaid gate instead)
   useEffect(() => {
@@ -184,6 +193,33 @@ export default function LoanFlow() {
         dueTs: new BN(i.due_ts),
         amountUsdc: new BN(i.amount_usdc),
       }));
+
+      // Sync on-chain score/tier before approval so the program sees the correct tier
+      if (scoreData?.score && scoreData.score !== vaultData.score) {
+        const engineScore = Math.round(scoreData.score);
+        const oraclePubkey = await fetchOraclePubkey();
+        const scoreTx = await program.methods
+          .updateScore(engineScore)
+          .accounts({ scoreAuthority: oraclePubkey })
+          .transaction();
+        const { blockhash, lastValidBlockHeight } = await connection.getLatestBlockhash();
+        scoreTx.recentBlockhash = blockhash;
+        scoreTx.feePayer = publicKey;
+        const oracleSignedTx = await requestOracleSignature(publicKey.toBase58(), engineScore, scoreTx);
+        const scoreSig = await sendTransaction(oracleSignedTx, connection);
+        await connection.confirmTransaction({ signature: scoreSig, blockhash, lastValidBlockHeight }, "confirmed");
+      }
+
+      // If a Paid loan PDA already occupies this slot, close it before allocating a new one
+      const existingLoanInfo = await connection.getAccountInfo(loanPDA);
+      if (existingLoanInfo) {
+        const closeTx = await program.methods
+          .closeLoan()
+          .accounts({ vault: vaultPDA, loan: loanPDA })
+          .transaction();
+        const closeSig = await sendTransaction(closeTx, connection);
+        await connection.confirmTransaction(closeSig, "confirmed");
+      }
 
       // approve_traditional_loan
       const approveTx = await program.methods
@@ -250,8 +286,10 @@ export default function LoanFlow() {
   const handleNext = () => { if (step < 5) setStep(step + 1); };
   const handleBack = () => { if (step > 1) setStep(step - 1); };
 
-  // Show Plaid gate when score engine is in sandbox mode and no token yet
-  const needsPlaid = !plaidToken && scoreData?.tier === "D";
+  // Tier D gate: show Plaid link if no token yet; show "not eligible" if Plaid linked but still D
+  const tierD = scoreData !== undefined && scoreTier === "D";
+  const needsPlaid = tierD && !plaidToken;
+  const notEligible = tierD && !!plaidToken;
 
   const stepVariants = {
     enter: { opacity: 0, x: 20 },
@@ -312,9 +350,45 @@ export default function LoanFlow() {
     );
   }
 
+  if (notEligible) {
+    return (
+      <MobileLayout showNav={false}>
+        <div className="flex h-full flex-col items-center justify-center px-8">
+          <motion.div
+            initial={{ opacity: 0, y: 16 }}
+            animate={{ opacity: 1, y: 0 }}
+            transition={{ duration: 0.4 }}
+            className="flex flex-col items-center gap-6 text-center"
+          >
+            <div className="flex h-20 w-20 items-center justify-center rounded-2xl bg-destructive/10">
+              <AlertCircle className="h-10 w-10 text-destructive" />
+            </div>
+            <div>
+              <h2 className="text-2xl font-bold text-foreground">Score too low</h2>
+              <p className="mt-2 text-muted-foreground">
+                Your score of {scoreData?.score ?? 0} doesn't qualify for a traditional loan yet. Deposit USDC and make on-time payments to build your score above 400.
+              </p>
+            </div>
+            <div className="w-full space-y-3">
+              <Button variant="accent" size="lg" className="w-full" onClick={() => navigate("/earn")}>
+                Build Score
+              </Button>
+              <button
+                onClick={() => navigate("/dashboard")}
+                className="text-sm text-muted-foreground underline-offset-2 hover:underline"
+              >
+                Back to dashboard
+              </button>
+            </div>
+          </motion.div>
+        </div>
+      </MobileLayout>
+    );
+  }
+
   return (
     <MobileLayout showNav={false}>
-      <div className="flex h-full flex-col">
+      <div className="flex min-h-full flex-col">
         {/* Header */}
         <div className="flex items-center gap-4 px-5 pt-12">
           <button
@@ -340,7 +414,7 @@ export default function LoanFlow() {
         </div>
 
         {/* Step Content */}
-        <div className="flex-1 overflow-y-auto px-5 py-6">
+        <div className="flex-1 px-5 py-6">
           <AnimatePresence mode="wait">
 
             {/* Step 1: Pre-approved Credit */}
@@ -384,7 +458,7 @@ export default function LoanFlow() {
                     <span className="font-financial text-4xl font-bold text-foreground">{fmt(loanAmount)}</span>
                   </div>
                   <div className="mt-8">
-                    <Slider value={[loanAmount]} onValueChange={(v) => setLoanAmount(v[0])} min={minLoan} max={maxLoan} step={50} className="py-4" />
+                    <Slider value={[loanAmount]} onValueChange={(v) => setLoanAmount(v[0])} min={minLoan} max={maxLoan} step={loanStep} className="py-4" />
                     <div className="mt-2 flex justify-between text-xs text-muted-foreground">
                       <span>{fmt(minLoan)}</span>
                       <span>{fmt(maxLoan)}</span>
@@ -443,7 +517,7 @@ export default function LoanFlow() {
                       <div className="rounded-xl bg-card p-4 shadow-soft">
                         <label className="text-sm font-medium text-foreground">Collateral Amount</label>
                         <div className="mt-3">
-                          <Slider value={[collateralAmount]} onValueChange={(v) => setCollateralAmount(v[0])} min={0} max={usdcFreeDisplay} step={10} className="py-4" />
+                          <Slider value={[collateralAmount]} onValueChange={(v) => setCollateralAmount(v[0])} min={0} max={usdcFreeDisplay} step={usdcFreeDisplay <= 50 ? 0.5 : 10} className="py-4" />
                           <div className="mt-2 flex justify-between">
                             <span className="text-xs text-muted-foreground">$0</span>
                             <span className="font-financial text-lg font-semibold text-accent">{fmt(collateralAmount)}</span>
@@ -553,7 +627,7 @@ export default function LoanFlow() {
         </div>
 
         {/* Bottom Button */}
-        <div className="border-t border-border px-5 py-4">
+        <div className="sticky bottom-0 z-10 border-t border-border bg-background px-5 py-4">
           {step < 5 ? (
             <Button
               variant="accent"

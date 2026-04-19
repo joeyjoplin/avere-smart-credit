@@ -1,7 +1,7 @@
 import { useState } from "react";
 import { motion } from "framer-motion";
 import { Calendar, TrendingUp, AlertCircle, Loader2, Copy, Check, ArrowDownLeft, Banknote, CheckCircle2 } from "lucide-react";
-import { loadHistory, relativeTime, type TxEvent } from "@/lib/txHistory";
+import { loadHistory, appendHistory, relativeTime, type TxEvent } from "@/lib/txHistory";
 import MobileLayout from "@/components/layout/MobileLayout";
 import SummaryCard from "@/components/cards/SummaryCard";
 import StatRow from "@/components/cards/StatRow";
@@ -20,6 +20,7 @@ import { useProgram } from "@/hooks/useProgram";
 import { useVault } from "@/hooks/useVault";
 import { useActiveLoan } from "@/hooks/useActiveLoan";
 import { useScore } from "@/hooks/useScore";
+import { usePlaidToken } from "@/hooks/usePlaidToken";
 import { fetchOraclePubkey, requestOracleSignature, fetchScore } from "@/lib/score-api";
 import {
   connection,
@@ -74,6 +75,11 @@ function daysUntil(ts: number): number {
   return Math.max(0, Math.round((ts - now) / 86400));
 }
 
+const DEMO_WALLETS: Record<string, string> = {
+  "ASXean8novL6x5eUWQ2qRdsXU9crTRkB6auA6uxCVeio": "Maria",
+  "Fsu2TS6ZbPVhoTdManZvUqdNuWq95fDHetj91wtHYs7r": "James",
+};
+
 const Dashboard = () => {
   const navigate = useNavigate();
   const { publicKey, sendTransaction } = useWallet();
@@ -81,6 +87,7 @@ const Dashboard = () => {
   const { data: vault, refetch: refetchVault } = useVault();
   const { data: loan, refetch: refetchLoan } = useActiveLoan();
   const { data: scoreData } = useScore();
+  const { token: plaidToken } = usePlaidToken(publicKey?.toBase58() ?? null);
   const [paying, setPaying] = useState(false);
   const [copied, setCopied] = useState(false);
 
@@ -91,8 +98,9 @@ const Dashboard = () => {
     setTimeout(() => setCopied(false), 2000);
   };
 
-  const displayScore = vault?.score ?? scoreData?.score ?? 0;
+  const displayScore = scoreData?.score || vault?.score || 0;
   const history = publicKey ? loadHistory(publicKey.toBase58()) : [];
+  const demoLabel = publicKey ? DEMO_WALLETS[publicKey.toBase58()] : undefined;
 
   // Next unpaid installment
   const nextInst = loan?.installments?.find((i) => !i.paid);
@@ -151,7 +159,7 @@ const Dashboard = () => {
       else if (now - dueTs < 7 * 86400) delta = -20; // late ≤7d
       else delta = -50;                         // late >7d
 
-      const engineScore = await fetchScore(publicKey!.toBase58());
+      const engineScore = await fetchScore(publicKey!.toBase58(), plaidToken ?? undefined);
       const newScore = Math.max(0, Math.min(1000, engineScore.score + delta));
       const oraclePubkey = await fetchOraclePubkey();
       const scoreTx = await program.methods
@@ -168,6 +176,17 @@ const Dashboard = () => {
       );
       const scoreSig = await sendTransaction(oracleSignedTx, connection);
       await connection.confirmTransaction({ signature: scoreSig, blockhash, lastValidBlockHeight }, "confirmed");
+
+      // Close the loan PDA if this was the last installment so the next loan can reuse the slot
+      const isLastPayment = (loan.paidCount + 1) === loan.nInstallments;
+      if (isLastPayment) {
+        const closeTx = await program.methods
+          .closeLoan()
+          .accounts({ vault: vaultPDA, loan: loanPDA })
+          .transaction();
+        const closeSig = await sendTransaction(closeTx, connection);
+        await connection.confirmTransaction(closeSig, "confirmed");
+      }
 
       appendHistory(publicKey.toBase58(), {
         type: "payment",
@@ -216,7 +235,14 @@ const Dashboard = () => {
           transition={{ duration: 0.4 }}
           className="mb-6"
         >
-          <p className="text-sm text-muted-foreground">Welcome back</p>
+          <div className="flex items-center gap-2">
+            <p className="text-sm text-muted-foreground">Welcome back</p>
+            {demoLabel && (
+              <span className="rounded-full bg-accent/10 px-2 py-0.5 text-xs font-semibold text-accent">
+                Demo · {demoLabel}{(scoreData?.tier ?? vault?.scoreTier) ? ` · Tier ${scoreData?.tier ?? vault?.scoreTier}` : ""}
+              </span>
+            )}
+          </div>
           <h1 className="text-2xl font-bold text-foreground">Your Loan Overview</h1>
           {publicKey && (
             <button
@@ -235,8 +261,9 @@ const Dashboard = () => {
         <div className="mb-4">
           <ScoreCard
             score={displayScore}
-            tier={vault?.scoreTier ?? scoreData?.tier}
+            tier={scoreData?.tier ?? (vault?.score ? vault.scoreTier : undefined)}
             breakdown={scoreData?.breakdown}
+            wallet={publicKey?.toBase58()}
             delay={0.05}
           />
         </div>
@@ -361,14 +388,23 @@ const Dashboard = () => {
             </motion.div>
           </>
         ) : (
-          /* No active loan */
+          /* No active loan — pre-approval card */
           <motion.div
             initial={{ opacity: 0, y: 16 }}
             animate={{ opacity: 1, y: 0 }}
             transition={{ duration: 0.4, delay: 0.15 }}
-            className="mt-4 rounded-2xl border border-border bg-card p-6 text-center shadow-soft"
+            className="mt-4 rounded-2xl border border-accent/30 bg-accent/5 p-6"
           >
-            <p className="text-muted-foreground">No active loan.</p>
+            <p className="text-xs font-semibold uppercase tracking-wide text-accent mb-1">Pre-approved</p>
+            <p className="font-financial text-2xl font-bold text-foreground">
+              Up to {fmt((scoreData?.max_loan_usdc ?? 0) / 1_000_000)}
+            </p>
+            <p className="text-sm text-muted-foreground mt-1">
+              Based on your Tier {scoreData?.tier ?? vault?.scoreTier ?? "—"} score
+              {scoreData?.base_rate_bps
+                ? ` · ${(scoreData.base_rate_bps / 100).toFixed(2)}% APR`
+                : ""}
+            </p>
             <Button
               variant="accent"
               size="lg"

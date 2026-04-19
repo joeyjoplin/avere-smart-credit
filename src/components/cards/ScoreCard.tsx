@@ -1,13 +1,15 @@
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import { motion, AnimatePresence } from "framer-motion";
-import { TrendingUp, Sparkles, ChevronDown } from "lucide-react";
+import { TrendingUp, Sparkles, ChevronDown, ArrowUp, ArrowDown, Minus, Loader2 } from "lucide-react";
 import { useNavigate } from "react-router-dom";
-import type { ScoreBreakdown } from "@/lib/score-api";
+import type { ScoreBreakdown, ScoreExplainFactor } from "@/lib/score-api";
+import { fetchScoreExplain } from "@/lib/score-api";
 
 interface ScoreCardProps {
   score: number;
   tier?: string;
   breakdown?: ScoreBreakdown;
+  wallet?: string;
   delay?: number;
 }
 
@@ -25,11 +27,28 @@ const getScoreLevel = (score: number): { label: string; color: string } => {
   return { label: "Tier D", color: "bg-destructive" };
 };
 
-const ScoreCard = ({ score, tier, breakdown, delay = 0 }: ScoreCardProps) => {
+const DIRECTION_ICON = {
+  up:      <ArrowUp  className="h-3 w-3 text-green-500" />,
+  down:    <ArrowDown className="h-3 w-3 text-destructive" />,
+  neutral: <Minus    className="h-3 w-3 text-muted-foreground" />,
+};
+
+const ScoreCard = ({ score, tier, breakdown, wallet, delay = 0 }: ScoreCardProps) => {
   const navigate = useNavigate();
   const [showBreakdown, setShowBreakdown] = useState(false);
+  const [explanation, setExplanation] = useState<{ summary: string; factors: ScoreExplainFactor[] } | null>(null);
+  const [loadingExplain, setLoadingExplain] = useState(false);
   const { label, color } = getScoreLevel(score);
   const displayLabel = tier ? `Tier ${tier}` : label;
+
+  useEffect(() => {
+    if (!showBreakdown || !wallet || explanation || loadingExplain) return;
+    setLoadingExplain(true);
+    fetchScoreExplain(wallet)
+      .then(setExplanation)
+      .catch(() => { /* silently skip — bars still show */ })
+      .finally(() => setLoadingExplain(false));
+  }, [showBreakdown, wallet, explanation, loadingExplain]);
 
   return (
     <motion.div
@@ -117,6 +136,9 @@ const ScoreCard = ({ score, tier, breakdown, delay = 0 }: ScoreCardProps) => {
                 <div className="space-y-3 pt-1">
                   {FACTORS.map(({ key, label: factorLabel, weight }) => {
                     const val = breakdown[key];
+                    const explainFactor = explanation?.factors.find(
+                      (f) => f.name.toLowerCase().includes(factorLabel.toLowerCase().split(" ")[0])
+                    );
                     return (
                       <div key={key}>
                         <div className="mb-1 flex items-center justify-between">
@@ -124,9 +146,12 @@ const ScoreCard = ({ score, tier, breakdown, delay = 0 }: ScoreCardProps) => {
                             {factorLabel}
                             <span className="ml-1 text-muted-foreground/50">{weight}</span>
                           </span>
-                          <span className="font-financial text-xs font-semibold text-foreground">
-                            {val}
-                          </span>
+                          <div className="flex items-center gap-1">
+                            {explainFactor && DIRECTION_ICON[explainFactor.direction]}
+                            <span className="font-financial text-xs font-semibold text-foreground">
+                              {val}
+                            </span>
+                          </div>
                         </div>
                         <div className="h-1.5 overflow-hidden rounded-full bg-avere-100">
                           <motion.div
@@ -136,9 +161,34 @@ const ScoreCard = ({ score, tier, breakdown, delay = 0 }: ScoreCardProps) => {
                             className="h-full rounded-full bg-gradient-accent"
                           />
                         </div>
+                        {explainFactor && (
+                          <p className="mt-1 text-[11px] text-muted-foreground leading-snug">
+                            {explainFactor.insight}
+                          </p>
+                        )}
                       </div>
                     );
                   })}
+
+                  {/* AI summary */}
+                  {loadingExplain && (
+                    <div className="flex items-center gap-1.5 pt-1 text-xs text-muted-foreground">
+                      <Loader2 className="h-3 w-3 animate-spin" />
+                      <span>Generating AI explanation…</span>
+                    </div>
+                  )}
+                  {explanation?.summary && (
+                    <motion.div
+                      initial={{ opacity: 0 }}
+                      animate={{ opacity: 1 }}
+                      transition={{ duration: 0.3 }}
+                      className="rounded-xl bg-accent/5 border border-accent/20 px-3 py-2.5 mt-1"
+                    >
+                      <p className="text-[11px] font-medium text-accent mb-0.5">AI Summary</p>
+                      <p className="text-[11px] text-foreground/80 leading-snug">{explanation.summary}</p>
+                    </motion.div>
+                  )}
+
                   {breakdown.macro_multiplier < 1.0 && (
                     <p className="text-xs text-amber-600">
                       Market conditions: tightened ({(breakdown.macro_multiplier * 100).toFixed(0)}% multiplier applied)

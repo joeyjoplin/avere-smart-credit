@@ -17,8 +17,8 @@ const MobileLayout = ({
   className = "",
 }: MobileLayoutProps) => {
   return (
-    <div className="relative mx-auto h-full w-full max-w-[430px] overflow-hidden bg-background">
-      <div className="flex items-center justify-center gap-1.5 bg-amber-500/10 px-3 py-1 text-xs font-medium text-amber-700">
+    <div className="relative mx-auto flex h-full w-full max-w-[430px] flex-col overflow-hidden bg-background">
+      <div className="flex shrink-0 items-center justify-center gap-1.5 bg-amber-500/10 px-3 py-1 text-xs font-medium text-amber-700">
         <span>Devnet demo</span>
         <span className="opacity-50">·</span>
         <span>Loan amounts capped at $10</span>
@@ -28,7 +28,7 @@ const MobileLayout = ({
         initial={{ opacity: 0 }}
         animate={{ opacity: 1 }}
         transition={{ duration: 0.3 }}
-        className={`h-full overflow-y-auto no-scrollbar ${showNav ? "pb-24" : ""} ${className}`}
+        className={`flex-1 overflow-y-auto no-scrollbar ${showNav ? "pb-36" : ""} ${className}`}
       >
         {children}
       </motion.main>

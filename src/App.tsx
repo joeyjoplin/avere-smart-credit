@@ -13,6 +13,7 @@ import Earn from "./pages/Earn";
 import Payments from "./pages/Payments";
 import DepositScreen from "./pages/DepositScreen";
 import Onboarding from "./pages/Onboarding";
+import Connect from "./pages/Connect";
 import NotFound from "./pages/NotFound";
 
 const queryClient = new QueryClient();
@@ -40,6 +41,7 @@ const App = () => (
             <Route path="/loan" element={<RequireWallet><LoanFlow /></RequireWallet>} />
             <Route path="/earn" element={<RequireWallet><Earn /></RequireWallet>} />
             <Route path="/payments" element={<RequireWallet><Payments /></RequireWallet>} />
+            <Route path="/connect" element={<RequireWallet><Connect /></RequireWallet>} />
             {/* ADD ALL CUSTOM ROUTES ABOVE THE CATCH-ALL "*" ROUTE */}
             <Route path="*" element={<NotFound />} />
           </Routes>
