@@ -37,7 +37,7 @@ import {
 } from "@/lib/solana";
 import { appendHistory } from "@/lib/txHistory";
 
-const INSTALLMENT_OPTIONS = [3, 6, 12];
+const INSTALLMENT_OPTIONS = [3, 6, 9, 12];
 
 const fmt = (v: number) =>
   new Intl.NumberFormat("en-US", { style: "currency", currency: "USD", minimumFractionDigits: 2 }).format(v);
