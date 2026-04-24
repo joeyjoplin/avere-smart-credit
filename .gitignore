@@ -33,23 +33,33 @@ node_modules
 test-ledger
 .yarn
 *.env
+.env
+.env.*
+!.env.example
 *.venv
 *.pyc
 __pycache__/
 ./score_engine/src/_pycache__/
 *.lock
 
+# Secrets — keypairs, private keys, credentials
+*keypair*.json
+*-keypair.json
+scripts/keypairs/
+*.pem
+*.key
+id_rsa*
+credentials.json
+secrets.json
 
-oracle-keypair.json
 .superstack
 scripts/DEMO_SCRIPT.md
 scripts/create_demo_wallets.py
-scripts/keypairs/james-keypair.json
-scripts/keypairs/maria-keypair.json
 smartcontracts/scripts/create_test_usdc.ts
 smartcontracts/scripts/setup_devnet.ts
 smartcontracts/scripts/test-usdc-mint.json
 HACKATHON_TASKS.md
+interest_tranche.md
 AVERE_BLUEPRINT.md
 AVERE_BLUEPRINT_US.md
 avere_blueprint.md
