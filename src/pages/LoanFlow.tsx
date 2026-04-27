@@ -39,6 +39,9 @@ import { appendHistory } from "@/lib/txHistory";
 
 const INSTALLMENT_OPTIONS = [3, 6, 9, 12];
 
+// Mirrors score-engine MAX_DEFI_PCT — max % of principal that can be DeFi-collateralized.
+const MAX_DEFI_PCT: Record<string, number> = { A: 70, B: 60, C: 50, D: 0 };
+
 const fmt = (v: number) =>
   new Intl.NumberFormat("en-US", { style: "currency", currency: "USD", minimumFractionDigits: 2 }).format(v);
 
@@ -121,6 +124,13 @@ export default function LoanFlow() {
   const baseRateBps = scoreData?.base_rate_bps ?? 975;
   const scoreTier = scoreData?.tier ?? vault?.scoreTier ?? "D";
   const usdcFreeDisplay = vault?.usdcFree ?? 0;
+  const tierMaxDefiPct = MAX_DEFI_PCT[scoreTier] ?? 0;
+  const collateralCap = Math.min(usdcFreeDisplay, (loanAmount * tierMaxDefiPct) / 100);
+
+  // Keep collateral ≤ cap when loan amount or tier changes
+  useEffect(() => {
+    if (collateralAmount > collateralCap) setCollateralAmount(collateralCap);
+  }, [collateralCap, collateralAmount]);
 
   // Initialize loan amount once score data resolves (avoid magic number / clamping issues)
   useEffect(() => {
@@ -440,7 +450,7 @@ export default function LoanFlow() {
                     <span className="text-sm font-medium text-foreground">Gig income verified via Argyle</span>
                   </div>
                   <p className="text-sm text-muted-foreground">
-                    Uber, DoorDash, Upwork, and Fiverr earnings count toward your score. Add USDC collateral to get a lower blended rate.
+                    Uber, DoorDash, Upwork, and Fiverr earnings count toward your score. Add USDC collateral to get a lower blended interest rate.
                   </p>
                 </div>
               </motion.div>
@@ -475,9 +485,12 @@ export default function LoanFlow() {
                 <div className="rounded-2xl bg-card p-6 shadow-card">
                   <div className="flex items-center justify-between">
                     <div>
-                      <h3 className="font-semibold text-foreground">Use your savings as collateral to lower your rate?</h3>
+                      <h3 className="font-semibold text-foreground">Use your savings as collateral to lower your interest rate?</h3>
                       <p className="mt-1 text-sm text-muted-foreground">
-                        Available: {fmt(usdcFreeDisplay)}
+                        Up to {fmt(collateralCap)} on this loan ({tierMaxDefiPct}% of {fmt(loanAmount)}, Tier {scoreTier})
+                      </p>
+                      <p className="text-xs text-muted-foreground/80">
+                        Savings balance: {fmt(usdcFreeDisplay)}
                       </p>
                     </div>
                     <Switch
@@ -486,7 +499,7 @@ export default function LoanFlow() {
                         setUseCollateral(v);
                         if (!v) setCollateralAmount(0);
                       }}
-                      disabled={usdcFreeDisplay <= 0}
+                      disabled={collateralCap <= 0}
                     />
                   </div>
                 </div>
@@ -497,20 +510,23 @@ export default function LoanFlow() {
                       <div className="rounded-xl bg-card p-4 shadow-soft">
                         <div className="flex items-center gap-3 text-muted-foreground">
                           <Wallet className="h-5 w-5" />
-                          <span className="text-sm">Your savings balance</span>
+                          <span className="text-sm">Available for this loan</span>
                         </div>
                         <p className="mt-2 font-financial text-2xl font-bold text-foreground">
-                          {fmt(usdcFreeDisplay)} <span className="text-sm font-normal text-muted-foreground">USDC</span>
+                          {fmt(collateralCap)} <span className="text-sm font-normal text-muted-foreground">USDC</span>
+                        </p>
+                        <p className="mt-1 text-xs text-muted-foreground">
+                          Tier {scoreTier} allows up to {tierMaxDefiPct}% of {fmt(loanAmount)} · savings balance {fmt(usdcFreeDisplay)}
                         </p>
                       </div>
                       <div className="rounded-xl bg-card p-4 shadow-soft">
                         <label className="text-sm font-medium text-foreground">Collateral Amount</label>
                         <div className="mt-3">
-                          <Slider value={[collateralAmount]} onValueChange={(v) => setCollateralAmount(v[0])} min={0} max={usdcFreeDisplay} step={usdcFreeDisplay <= 50 ? 0.5 : 10} className="py-4" />
+                          <Slider value={[collateralAmount]} onValueChange={(v) => setCollateralAmount(v[0])} min={0} max={collateralCap} step={collateralCap <= 50 ? 0.5 : 10} className="py-4" />
                           <div className="mt-2 flex justify-between">
                             <span className="text-xs text-muted-foreground">$0</span>
                             <span className="font-financial text-lg font-semibold text-accent">{fmt(collateralAmount)}</span>
-                            <span className="text-xs text-muted-foreground">{fmt(usdcFreeDisplay)}</span>
+                            <span className="text-xs text-muted-foreground">{fmt(collateralCap)}</span>
                           </div>
                         </div>
                       </div>
@@ -525,7 +541,7 @@ export default function LoanFlow() {
               <motion.div key="step4" variants={stepVariants} initial="enter" animate="center" exit="exit" transition={{ duration: 0.3 }} className="space-y-6">
                 {useCollateral && collateralAmount > 0 && (
                   <div className="rounded-xl border border-accent/20 bg-accent/5 px-4 py-3 text-sm text-muted-foreground">
-                    Your loan is split between your deposited USDC (lower rate) and our lending pool (standard rate). You make one monthly payment at the blended rate below.
+                    Your loan is split between your deposited USDC (lower interest rate) and our lending pool (standard interest rate). You make one monthly payment at the blended interest rate below.
                   </div>
                 )}
                 <div className="rounded-2xl bg-card p-6 shadow-card">
@@ -552,7 +568,7 @@ export default function LoanFlow() {
                       <span className="font-financial text-xl font-bold text-foreground">{fmt(monthlyPaymentDisplay)}</span>
                     </div>
                     <div className="flex items-center justify-between rounded-xl bg-card p-4 shadow-soft">
-                      <span className="text-sm text-muted-foreground">Your rate</span>
+                      <span className="text-sm text-muted-foreground">Your interest rate</span>
                       <span className="font-financial text-xl font-bold text-accent">{blendedRateApr.toFixed(2)}% APR</span>
                     </div>
                     <div className="flex items-center justify-between rounded-xl bg-avere-50 p-4">
@@ -575,7 +591,7 @@ export default function LoanFlow() {
                   <div className="mt-6 space-y-4">
                     {[
                       ["Loan Amount", fmt(loanAmount)],
-                      ["Your rate", `${blendedRateApr.toFixed(2)}% APR`],
+                      ["Your interest rate", `${blendedRateApr.toFixed(2)}% APR`],
                       ["Monthly payments", `${nMonths} months`],
                       ["Monthly Payment", fmt(monthlyPaymentDisplay)],
                     ].map(([label, value]) => (

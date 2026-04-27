@@ -74,9 +74,9 @@ const HomeScreen = () => {
           className="w-full space-y-3"
         >
           {[
-            { icon: Briefcase, text: "Verify your income from Uber, DoorDash, or Upwork" },
-            { icon: BarChart2, text: "Get a credit score based on what you actually earn" },
-            { icon: CreditCard, text: "Borrow up to $500 at a fair rate — repay monthly" },
+            { icon: Briefcase, text: "Connect — verify your real income" },
+            { icon: BarChart2, text: "Score — based on what you earn" },
+            { icon: CreditCard, text: "Borrow — at fair rates, repay monthly" },
           ].map(({ icon: Icon, text }, i) => (
             <div key={i} className="flex items-center gap-3">
               <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-xl bg-accent/10">
