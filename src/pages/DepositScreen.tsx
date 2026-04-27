@@ -1,16 +1,29 @@
 import { useState, useCallback, useEffect } from "react";
 import { motion, AnimatePresence } from "framer-motion";
-import { ArrowLeft, Coins, Info, Loader2, CheckCircle2, Circle, Building2 } from "lucide-react";
+import {
+  ArrowLeft,
+  Coins,
+  Info,
+  Loader2,
+  CheckCircle2,
+  Circle,
+  Building2,
+  Copy,
+  ChevronLeft,
+  ChevronRight,
+  ExternalLink,
+  Sparkles,
+  X,
+} from "lucide-react";
 import { useNavigate } from "react-router-dom";
 import { useWallet } from "@solana/wallet-adapter-react";
-import { PublicKey } from "@solana/web3.js";
+import { Transaction } from "@solana/web3.js";
 import {
   createAssociatedTokenAccountInstruction,
   getAssociatedTokenAddressSync,
   TOKEN_PROGRAM_ID,
   ASSOCIATED_TOKEN_PROGRAM_ID,
 } from "@solana/spl-token";
-import { Transaction } from "@solana/web3.js";
 import { usePlaidLink } from "react-plaid-link";
 import { useQueryClient } from "@tanstack/react-query";
 import MobileLayout from "@/components/layout/MobileLayout";
@@ -23,7 +36,6 @@ import { usePlaidToken } from "@/hooks/usePlaidToken";
 import {
   fetchOraclePubkey,
   requestOracleSignature,
-  requestAirdropUsdc,
   fetchPlaidLinkToken,
   exchangePlaidToken,
 } from "@/lib/score-api";
@@ -60,21 +72,21 @@ export default function DepositScreen() {
   const { token: plaidToken, setToken: setPlaidToken } = usePlaidToken(walletStr);
   const queryClient = useQueryClient();
 
-  // step 0 = income verification, step 1 = deposit amount
-  const [step, setStep] = useState(plaidToken ? 1 : 0);
   const [amount, setAmount] = useState("");
   const [loading, setLoading] = useState(false);
   const [phase, setPhase] = useState(-1);
-  const [airdropLoading, setAirdropLoading] = useState(false);
 
-  // Plaid link state
+  // Plaid link state — income link is opt-in, never blocks deposit
   const [plaidLinkToken, setPlaidLinkToken] = useState<string | null>(null);
   const [fetchingLinkToken, setFetchingLinkToken] = useState(false);
 
-  // Auto-advance to deposit step if plaidToken becomes available
-  useEffect(() => {
-    if (plaidToken && step === 0) setStep(1);
-  }, [plaidToken, step]);
+  // Faucet tutorial carousel — visible when wallet has no USDC
+  const [tutorialSlide, setTutorialSlide] = useState(0);
+  const tutorialDismissKey = walletStr ? `avere_tutorial_dismissed_${walletStr}` : null;
+  const [tutorialDismissed, setTutorialDismissed] = useState(() => {
+    if (!tutorialDismissKey) return false;
+    return localStorage.getItem(tutorialDismissKey) === "1";
+  });
 
   const onPlaidSuccess = useCallback(
     async (publicToken: string) => {
@@ -129,29 +141,17 @@ export default function DepositScreen() {
     await connection.confirmTransaction(sig, "confirmed");
   }
 
-  async function handleAirdrop() {
-    if (!publicKey) return;
-    const key = `avere_faucet_${publicKey.toBase58()}`;
-    const last = parseInt(localStorage.getItem(key) ?? "0", 10);
-    if (Date.now() - last < 3_600_000) {
-      const waitMin = Math.ceil((3_600_000 - (Date.now() - last)) / 60_000);
-      toast({ title: "Already claimed", description: `Try again in ~${waitMin} min.`, variant: "destructive" });
-      return;
-    }
-    setAirdropLoading(true);
-    try {
-      const { amount_usdc } = await requestAirdropUsdc(publicKey.toBase58());
-      localStorage.setItem(key, Date.now().toString());
-      toast({ title: "Test USDC sent!", description: `$${amount_usdc.toFixed(2)} devnet USDC is on its way.` });
-    } catch (err: unknown) {
-      toast({
-        title: "Airdrop failed",
-        description: err instanceof Error ? err.message : "Try again later",
-        variant: "destructive",
-      });
-    } finally {
-      setAirdropLoading(false);
-    }
+  function copyAddress() {
+    if (!walletStr) return;
+    navigator.clipboard.writeText(walletStr).then(
+      () => toast({ title: "Copied", description: "Wallet address copied to clipboard." }),
+      () => toast({ title: "Copy failed", description: "Select and copy manually.", variant: "destructive" })
+    );
+  }
+
+  function dismissTutorial() {
+    if (tutorialDismissKey) localStorage.setItem(tutorialDismissKey, "1");
+    setTutorialDismissed(true);
   }
 
   async function handleDeposit() {
@@ -280,73 +280,16 @@ export default function DepositScreen() {
     }
   }
 
-  // Step 0: Income verification
-  if (step === 0) {
-    return (
-      <MobileLayout showNav={false}>
-        <div className="flex h-full flex-col items-center justify-center px-8">
-          <motion.div
-            initial={{ opacity: 0, y: 16 }}
-            animate={{ opacity: 1, y: 0 }}
-            transition={{ duration: 0.4 }}
-            className="flex w-full flex-col items-center gap-6 text-center"
-          >
-            <div className="flex h-20 w-20 items-center justify-center rounded-2xl bg-accent/10">
-              <Building2 className="h-10 w-10 text-accent" />
-            </div>
+  const hasZeroBalance = (vault?.usdcDeposited ?? 0) === 0;
+  const showTutorial = !!publicKey && hasZeroBalance && !tutorialDismissed;
 
-            <div>
-              <h2 className="text-2xl font-bold text-foreground">Verify your income</h2>
-              <p className="mt-2 text-muted-foreground">
-                Connect your bank so we can calculate your credit score. It only takes 30 seconds.
-              </p>
-            </div>
-
-            <div className="w-full space-y-3">
-              <Button
-                variant="accent"
-                size="lg"
-                className="w-full"
-                onClick={startPlaidLink}
-                disabled={fetchingLinkToken || !publicKey}
-              >
-                {fetchingLinkToken ? (
-                  <><Loader2 className="mr-2 h-5 w-5 animate-spin" /> Connecting…</>
-                ) : (
-                  <><Building2 className="mr-2 h-5 w-5" /> Connect Bank Account</>
-                )}
-              </Button>
-
-              <button
-                onClick={() => setStep(1)}
-                className="w-full py-2 text-sm text-muted-foreground underline-offset-2 hover:text-foreground hover:underline"
-              >
-                I'll do this later
-              </button>
-            </div>
-
-            <div className="space-y-1.5">
-              <p className="text-xs text-muted-foreground/60">
-                Powered by Plaid · Bank-grade security · Read-only access
-              </p>
-              <p className="text-xs text-muted-foreground/40">
-                Sandbox: use <span className="font-mono">user_good / pass_good</span>
-              </p>
-            </div>
-          </motion.div>
-        </div>
-      </MobileLayout>
-    );
-  }
-
-  // Step 1: Deposit amount
   return (
     <MobileLayout showNav={false}>
       <div className="flex h-full flex-col px-5 pt-12">
         {/* Header */}
         <div className="mb-6 flex items-center gap-4">
           <button
-            onClick={() => (plaidToken ? navigate("/home") : setStep(0))}
+            onClick={() => navigate("/home")}
             className="flex h-10 w-10 items-center justify-center rounded-xl bg-secondary transition-colors hover:bg-secondary/80"
           >
             <ArrowLeft className="h-5 w-5 text-foreground" />
@@ -387,29 +330,172 @@ export default function DepositScreen() {
           </motion.div>
         )}
 
-        {/* Devnet faucet — visible when user has no USDC yet */}
-        {publicKey && (vault?.usdcDeposited ?? 0) === 0 && (
+        {/* Faucet tutorial carousel — visible when wallet has no USDC */}
+        <AnimatePresence>
+          {showTutorial && walletStr && (
+            <motion.div
+              initial={{ opacity: 0, y: 8 }}
+              animate={{ opacity: 1, y: 0 }}
+              exit={{ opacity: 0, y: -8 }}
+              transition={{ delay: 0.05 }}
+              className="mb-4 rounded-2xl border border-accent/30 bg-accent/5 p-4"
+            >
+              <div className="mb-3 flex items-center justify-between">
+                <p className="text-xs font-semibold uppercase tracking-wide text-accent">
+                  Step {tutorialSlide + 1} of 3 · Get test funds
+                </p>
+                <button
+                  onClick={dismissTutorial}
+                  className="text-muted-foreground hover:text-foreground"
+                  aria-label="Dismiss tutorial"
+                >
+                  <X className="h-4 w-4" />
+                </button>
+              </div>
+
+              <AnimatePresence mode="wait">
+                {tutorialSlide === 0 && (
+                  <motion.div
+                    key="slide-0"
+                    initial={{ opacity: 0, x: 12 }}
+                    animate={{ opacity: 1, x: 0 }}
+                    exit={{ opacity: 0, x: -12 }}
+                    transition={{ duration: 0.18 }}
+                  >
+                    <h3 className="text-base font-semibold text-foreground">Copy your wallet address</h3>
+                    <p className="mt-1 text-sm text-muted-foreground">
+                      You'll paste this into the faucets in the next steps.
+                    </p>
+                    <div className="mt-3 flex items-center gap-2 rounded-xl bg-background p-2.5">
+                      <code className="flex-1 truncate font-mono text-xs text-foreground">{walletStr}</code>
+                      <button
+                        onClick={copyAddress}
+                        className="flex items-center gap-1 rounded-lg bg-accent px-3 py-1.5 text-xs font-semibold text-accent-foreground hover:bg-accent/90"
+                      >
+                        <Copy className="h-3.5 w-3.5" />
+                        Copy
+                      </button>
+                    </div>
+                  </motion.div>
+                )}
+
+                {tutorialSlide === 1 && (
+                  <motion.div
+                    key="slide-1"
+                    initial={{ opacity: 0, x: 12 }}
+                    animate={{ opacity: 1, x: 0 }}
+                    exit={{ opacity: 0, x: -12 }}
+                    transition={{ duration: 0.18 }}
+                  >
+                    <h3 className="text-base font-semibold text-foreground">Get devnet SOL</h3>
+                    <p className="mt-1 text-sm text-muted-foreground">
+                      SOL pays the tiny network fees. Paste your address, request 1 SOL.
+                    </p>
+                    <a
+                      href="https://faucet.solana.com"
+                      target="_blank"
+                      rel="noreferrer"
+                      className="mt-3 flex items-center justify-between rounded-xl bg-background p-3 transition-colors hover:bg-background/70"
+                    >
+                      <span className="font-mono text-sm text-foreground">faucet.solana.com</span>
+                      <ExternalLink className="h-4 w-4 text-muted-foreground" />
+                    </a>
+                    <p className="mt-2 text-xs text-muted-foreground">
+                      Backup: <a href="https://faucet.quicknode.com/solana/devnet" target="_blank" rel="noreferrer" className="underline">faucet.quicknode.com</a>
+                    </p>
+                  </motion.div>
+                )}
+
+                {tutorialSlide === 2 && (
+                  <motion.div
+                    key="slide-2"
+                    initial={{ opacity: 0, x: 12 }}
+                    animate={{ opacity: 1, x: 0 }}
+                    exit={{ opacity: 0, x: -12 }}
+                    transition={{ duration: 0.18 }}
+                  >
+                    <h3 className="text-base font-semibold text-foreground">Get devnet USDC</h3>
+                    <p className="mt-1 text-sm text-muted-foreground">
+                      Circle's official faucet. Pick Solana Devnet, paste your address, request 10 USDC.
+                    </p>
+                    <a
+                      href="https://faucet.circle.com"
+                      target="_blank"
+                      rel="noreferrer"
+                      className="mt-3 flex items-center justify-between rounded-xl bg-background p-3 transition-colors hover:bg-background/70"
+                    >
+                      <span className="font-mono text-sm text-foreground">faucet.circle.com</span>
+                      <ExternalLink className="h-4 w-4 text-muted-foreground" />
+                    </a>
+                    <p className="mt-2 text-xs text-muted-foreground">
+                      Once it lands, refresh and the Deposit button will enable.
+                    </p>
+                  </motion.div>
+                )}
+              </AnimatePresence>
+
+              {/* Carousel controls */}
+              <div className="mt-4 flex items-center justify-between">
+                <button
+                  onClick={() => setTutorialSlide((s) => Math.max(0, s - 1))}
+                  disabled={tutorialSlide === 0}
+                  className="flex items-center gap-1 text-xs font-medium text-muted-foreground transition-colors hover:text-foreground disabled:opacity-30"
+                >
+                  <ChevronLeft className="h-4 w-4" />
+                  Back
+                </button>
+                <div className="flex gap-1.5">
+                  {[0, 1, 2].map((i) => (
+                    <button
+                      key={i}
+                      onClick={() => setTutorialSlide(i)}
+                      className={`h-1.5 w-6 rounded-full transition-colors ${
+                        i === tutorialSlide ? "bg-accent" : "bg-accent/20"
+                      }`}
+                      aria-label={`Go to step ${i + 1}`}
+                    />
+                  ))}
+                </div>
+                <button
+                  onClick={() => setTutorialSlide((s) => Math.min(2, s + 1))}
+                  disabled={tutorialSlide === 2}
+                  className="flex items-center gap-1 text-xs font-medium text-muted-foreground transition-colors hover:text-foreground disabled:opacity-30"
+                >
+                  Next
+                  <ChevronRight className="h-4 w-4" />
+                </button>
+              </div>
+            </motion.div>
+          )}
+        </AnimatePresence>
+
+        {/* Opt-in income link card — never blocks deposit, just a score booster */}
+        {!plaidToken && publicKey && (
           <motion.div
             initial={{ opacity: 0, y: 8 }}
             animate={{ opacity: 1, y: 0 }}
-            transition={{ delay: 0.05 }}
-            className="mb-4"
+            transition={{ delay: 0.07 }}
+            className="mb-4 flex items-center gap-3 rounded-2xl border border-border bg-card p-3.5"
           >
+            <div className="flex h-9 w-9 flex-shrink-0 items-center justify-center rounded-xl bg-accent/10">
+              <Sparkles className="h-4 w-4 text-accent" />
+            </div>
+            <div className="min-w-0 flex-1">
+              <p className="text-sm font-medium text-foreground">Link income for a higher score</p>
+              <p className="text-xs text-muted-foreground">Optional · powered by Plaid</p>
+            </div>
             <button
-              onClick={handleAirdrop}
-              disabled={airdropLoading || loading}
-              className="w-full rounded-2xl border border-accent/30 bg-accent/5 py-3.5 text-sm font-semibold text-accent transition-colors hover:bg-accent/10 disabled:opacity-50"
+              onClick={startPlaidLink}
+              disabled={fetchingLinkToken}
+              className="flex items-center gap-1 rounded-lg border border-accent/30 px-3 py-1.5 text-xs font-semibold text-accent transition-colors hover:bg-accent/10 disabled:opacity-50"
             >
-              {airdropLoading ? (
-                <span className="flex items-center justify-center gap-2">
-                  <Loader2 className="h-4 w-4 animate-spin" />
-                  Sending test USDC…
-                </span>
+              {fetchingLinkToken ? (
+                <Loader2 className="h-3.5 w-3.5 animate-spin" />
               ) : (
-                "Get $10 test USDC"
+                <Building2 className="h-3.5 w-3.5" />
               )}
+              Link
             </button>
-            <p className="mt-1.5 text-center text-xs text-muted-foreground">Free devnet funds · 1 request per hour</p>
           </motion.div>
         )}
 

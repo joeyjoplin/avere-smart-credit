@@ -134,19 +134,10 @@ export async function fetchScoreExplain(wallet: string): Promise<ScoreExplainRes
 }
 
 // ── Devnet faucet ─────────────────────────────────────────────────────────────
-
-export async function requestAirdropUsdc(wallet: string): Promise<{ signature: string; amount_usdc: number }> {
-  const res = await fetch(`${SCORE_API}/devnet/airdrop-usdc`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ wallet, amount_usdc: 10 }),
-  });
-  if (!res.ok) {
-    const err = await res.json().catch(() => ({}));
-    throw new Error(err.detail ?? `Airdrop failed: ${res.status}`);
-  }
-  return res.json();
-}
+// `POST /devnet/airdrop-usdc` is deprecated for the MVP demo — the in-app
+// faucet button proved unstable (502s when the backend wallet ran dry,
+// solders segfaults on Render). Users now collect test funds themselves via
+// faucet.solana.com and faucet.circle.com (see DepositScreen tutorial carousel).
 
 // ── Oracle signing helpers ────────────────────────────────────────────────────
 
