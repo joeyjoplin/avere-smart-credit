@@ -218,13 +218,12 @@ export default function DepositScreen() {
       const userAta = userAtaAddr;
       const vaultAta = vaultAtaAddr;
 
-      // Phase 1: Transferring USDC
+      // Phase 1: Transferring USDC — usdcMint auto-resolved by Anchor
       setPhase(1);
       const depositTx = await program.methods
         .depositUsdc(amountBN)
         .accounts({
-          usdcMint: USDC_MINT,
-          userUsdcAta: userAta,
+          userUsdcAta:  userAta,
           vaultUsdcAta: vaultAta,
           tokenProgram: TPK,
         })
@@ -232,24 +231,31 @@ export default function DepositScreen() {
       const depositSig = await sendTransaction(depositTx, connection);
       await connection.confirmTransaction(depositSig, "confirmed");
 
-      // Phase 2: Activating yield
+      // Phase 2: Activating yield — usdcMint auto-resolved
       setPhase(2);
       const rebalanceTx = await program.methods
         .rebalanceYield()
         .accounts({
-          usdcMint:           USDC_MINT,
-          vaultUsdcAta:       vaultUsdcAta(vaultPDA),
-          mockKaminoUsdcAta:  mockKaminoUsdcAta(),
-          tokenProgram:       TPK,
+          vaultUsdcAta:      vaultUsdcAta(vaultPDA),
+          mockKaminoUsdcAta: mockKaminoUsdcAta(),
+          tokenProgram:      TPK,
         })
         .transaction();
       const rebalanceSig = await sendTransaction(rebalanceTx, connection);
       await connection.confirmTransaction(rebalanceSig, "confirmed");
 
-      // Phase 3: Updating score
+      // Phase 3: Updating score (+15)
+      // Base on the actual on-chain vault score (re-read post-deposit) — NOT the
+      // engine score. scoreData.score is the engine's pre-delta value, cached for
+      // 5 min by react-query, so using it produces the same `engine + 15` every
+      // time and subsequent deposits silently no-op on-chain.
+      // We still call fetchScore() to populate the oracle's _score_cache so it
+      // accepts new_score = engine + 15·N.
       setPhase(3);
-      const currentScore = scoreData?.score ?? vault?.score ?? 0;
-      const newScore = Math.min(1000, currentScore + 15);
+      await fetchScore(publicKey!.toBase58());
+      const freshVault = await program.account.userVault.fetch(vaultPDA);
+      const onChainScore: number = freshVault.score as number;
+      const newScore = Math.min(1000, onChainScore + 15);
       const oraclePubkey = await fetchOraclePubkey();
       const scoreTx = await program.methods
         .updateScore(newScore)
@@ -265,8 +271,8 @@ export default function DepositScreen() {
       appendHistory(publicKey.toBase58(), {
         type: "deposit",
         amount: amountNum,
-        scoreDelta: 15,
-        newScore: Math.min(1000, (scoreData?.score ?? vault?.score ?? 0) + 15),
+        scoreDelta: newScore - onChainScore,
+        newScore,
         timestamp: Date.now(),
       });
 

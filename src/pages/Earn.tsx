@@ -98,12 +98,11 @@ const Earn = () => {
       const userAta = await ensureUserAta();
       const vaultAta = await ensureVaultAta(vaultPDA);
 
-      // deposit_usdc
+      // deposit_usdc — usdcMint auto-resolved by Anchor from the program constraint
       const depositTx = await program.methods
         .depositUsdc(amountBN)
         .accounts({
-          usdcMint: USDC_MINT,
-          userUsdcAta: userAta,
+          userUsdcAta:  userAta,
           vaultUsdcAta: vaultAta,
           tokenProgram: TPK,
         })
@@ -111,22 +110,24 @@ const Earn = () => {
       const depositSig = await sendTransaction(depositTx, connection);
       await connection.confirmTransaction(depositSig, "confirmed");
 
-      // rebalance_yield
+      // rebalance_yield — usdcMint auto-resolved
       const rebalanceTx = await program.methods
         .rebalanceYield()
         .accounts({
-          usdcMint:           USDC_MINT,
-          vaultUsdcAta:       vaultUsdcAta(vaultPDA),
-          mockKaminoUsdcAta:  mockKaminoUsdcAta(),
-          tokenProgram:       TPK,
+          vaultUsdcAta:      vaultUsdcAta(vaultPDA),
+          mockKaminoUsdcAta: mockKaminoUsdcAta(),
+          tokenProgram:      TPK,
         })
         .transaction();
       const rebalanceSig = await sendTransaction(rebalanceTx, connection);
       await connection.confirmTransaction(rebalanceSig, "confirmed");
 
-      // update_score +15 — base must match engine score to pass oracle validation
-      const freshScore = await fetchScore(publicKey!.toBase58()); // also populates _score_cache
-      const newScore = Math.min(1000, freshScore.score + 15);
+      // update_score +15 — base on the actual on-chain score (re-read post-deposit)
+      // and prime the oracle's score cache so it accepts new_score = engine + 15·N.
+      await fetchScore(publicKey!.toBase58()); // populates oracle _score_cache
+      const freshVault = await program.account.userVault.fetch(vaultPDA);
+      const onChainScore: number = freshVault.score as number;
+      const newScore = Math.min(1000, onChainScore + 15);
       const oraclePubkey = await fetchOraclePubkey();
       const scoreTx = await program.methods
         .updateScore(newScore)
