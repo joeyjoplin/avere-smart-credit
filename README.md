@@ -150,3 +150,88 @@ TURNKEY_API_PUBLIC_KEY=
 TURNKEY_API_PRIVATE_KEY=
 FRED_API_KEY=
 ```
+
+---
+
+## Score-as-a-Service (post-MVP — architecture preview)
+
+Avere is **two products in one codebase**:
+
+- **Layer 1 — the neobank.** A consumer fintech for the workforce that traditional credit can't see (gig workers, immigrants, crypto-paid). Every loan generates labeled training data: did the user repay? Did they default? This is the data factory.
+- **Layer 2 — the Avere Score API.** Lenders, marketplaces, DAOs, gig platforms, and any protocol that needs to underwrite the same demographic pay per query to read a user's Avere Score. Users always free; businesses pay. The bank IS the moat for the score.
+
+### The flywheel
+
+```
+More bank users → more loan outcomes → better ML model → better-calibrated scores
+       ↑                                                              ↓
+       └── more user CAC funded by ───── more B2B partners pay ───────┘
+```
+
+### B2B endpoint surface (planned)
+
+The user-facing `/score?wallet=…` endpoint stays free and unmetered. B2B partners use a separate, authenticated endpoint:
+
+```bash
+curl "https://api.avere.finance/score/verify?wallet=<USER>&audience=<PARTNER>" \
+  -H "X-API-Key: <CUSTOMER_KEY>"
+```
+
+Sample response (oracle-signed attestation):
+
+```json
+{
+  "attestation": {
+    "wallet": "ASXean8novL6x5eUWQ2qRdsXU9crTRkB6auA6uxCVeio",
+    "score": 810,
+    "tier": "A",
+    "fico_equivalent": "720+",
+    "issued_at": 1714234567,
+    "expires_at": 1714234867,
+    "audience": "BoRRowPRoTo1XXXXXXXXXXXXXXXXXXXXXXXXXXXXXX",
+    "grant_pda": "ScoREgRanT1XXXXXXXXXXXXXXXXXXXXXXXXXXXXX",
+    "breakdown": {
+      "cashflow": 0.78,
+      "income": 0.82,
+      "onchain": 0.65,
+      "payment_history": 0.91
+    }
+  },
+  "signature": "ed25519:base64...",
+  "billing": { "charged_usd": 0.30, "remaining_credits": 9670 }
+}
+```
+
+The consumer verifies the `signature` locally with the public Avere oracle pubkey — no need to trust the API at request time.
+
+### Pricing tiers (planned)
+
+| Tier | Audience | Price |
+|---|---|---|
+| Self-query | Wallet owner | Free, unmetered |
+| Pay-as-you-go | Small lenders, DAOs | $0.30 / query |
+| Growth | Mid-market lenders | $5k/yr (50k queries) + $0.10 over |
+| Enterprise | Banks, large fintechs | $50k/yr (1M queries) + custom |
+
+### Authorization model
+
+Every B2B read requires an on-chain `ScoreShareGrant` PDA the user has authorized — audience-bound, time-limited, revocable:
+
+| Field | Purpose |
+|---|---|
+| `vault` | Whose score |
+| `audience` | Which consumer pubkey |
+| `expires_at` | Unix ts; reads after this fail |
+| `max_reads` | Optional rate limit per grant |
+| `revoked` | User flips to `true` to revoke |
+
+The `/score/verify` endpoint refuses to mint an attestation without a valid grant. Users manage grants from the Dashboard "Manage shares →" link. Revocation is instant.
+
+### What's live today
+
+- ✅ `/lender-demo` — frontend visualization of the B2B flow ([app.avere.finance/lender-demo](https://avere-smart-credit.vercel.app/lender-demo))
+- ✅ "Manage shares" Dashboard UI — mock state in `localStorage` for the hackathon
+- ⏳ `ScoreShareGrant` Anchor instruction — post-MVP
+- ⏳ `/score/verify` endpoint with API key auth + Stripe billing — post-MVP
+
+See [AVERE_BLUEPRINT.md `## Score-as-a-Service`](AVERE_BLUEPRINT.md) for the full spec.

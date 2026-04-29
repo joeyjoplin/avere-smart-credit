@@ -7,6 +7,7 @@ import {
 import { loadHistory, relativeTime, type TxEvent } from "@/lib/txHistory";
 import MobileLayout from "@/components/layout/MobileLayout";
 import AgentCard from "@/components/cards/AgentCard";
+import ShareScoreCard from "@/components/cards/ShareScoreCard";
 import { Button } from "@/components/ui/button";
 import { useNavigate } from "react-router-dom";
 import { useWallet } from "@solana/wallet-adapter-react";
@@ -114,7 +115,6 @@ const Dashboard = () => {
       const tx = await program.methods
         .withdraw(toUsdc(parsedAmount))
         .accounts({
-          vault:        vaultPDA,
           usdcMint:     USDC_MINT,
           vaultUsdcAta: vaultUsdcAta(vaultPDA),
           userUsdcAta:  ownerUsdcAta(publicKey),
@@ -366,6 +366,11 @@ const Dashboard = () => {
             </div>
             <span className="font-financial text-xl font-bold text-accent">{displayScore}</span>
           </motion.button>
+        )}
+
+        {/* Score-as-a-Service — Layer 2 sharing UX (mock state in localStorage) */}
+        {displayScore > 0 && publicKey && (
+          <ShareScoreCard wallet={publicKey.toBase58()} />
         )}
 
         {/* AI Yield Optimizer */}
