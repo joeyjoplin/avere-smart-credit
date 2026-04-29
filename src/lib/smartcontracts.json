@@ -432,6 +432,162 @@
       "args": []
     },
     {
+      "name": "initialize_mock_kamino",
+      "discriminator": [
+        94,
+        66,
+        63,
+        203,
+        136,
+        101,
+        239,
+        98
+      ],
+      "accounts": [
+        {
+          "name": "authority",
+          "writable": true,
+          "signer": true
+        },
+        {
+          "name": "mock_kamino_pool",
+          "docs": [
+            "PDA that owns the mock Kamino USDC holding ATA."
+          ],
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  109,
+                  111,
+                  99,
+                  107,
+                  45,
+                  107,
+                  97,
+                  109,
+                  105,
+                  110,
+                  111
+                ]
+              }
+            ]
+          }
+        },
+        {
+          "name": "usdc_mint",
+          "address": "4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU"
+        },
+        {
+          "name": "mock_kamino_usdc_ata",
+          "docs": [
+            "USDC pool ATA owned by the mock_kamino_pool PDA."
+          ],
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "account",
+                "path": "mock_kamino_pool"
+              },
+              {
+                "kind": "const",
+                "value": [
+                  6,
+                  221,
+                  246,
+                  225,
+                  215,
+                  101,
+                  161,
+                  147,
+                  217,
+                  203,
+                  225,
+                  70,
+                  206,
+                  235,
+                  121,
+                  172,
+                  28,
+                  180,
+                  133,
+                  237,
+                  95,
+                  91,
+                  55,
+                  145,
+                  58,
+                  140,
+                  245,
+                  133,
+                  126,
+                  255,
+                  0,
+                  169
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "usdc_mint"
+              }
+            ],
+            "program": {
+              "kind": "const",
+              "value": [
+                140,
+                151,
+                37,
+                143,
+                78,
+                36,
+                137,
+                241,
+                187,
+                61,
+                16,
+                41,
+                20,
+                142,
+                13,
+                131,
+                11,
+                90,
+                19,
+                153,
+                218,
+                255,
+                16,
+                132,
+                4,
+                142,
+                123,
+                216,
+                219,
+                233,
+                248,
+                89
+              ]
+            }
+          }
+        },
+        {
+          "name": "token_program"
+        },
+        {
+          "name": "associated_token_program",
+          "address": "ATokenGPvbdGVxr1b2hvZbsiqW5xWH25efTNsLJA8knL"
+        },
+        {
+          "name": "system_program",
+          "address": "11111111111111111111111111111111"
+        }
+      ],
+      "args": []
+    },
+    {
       "name": "initialize_vault",
       "discriminator": [
         48,
@@ -627,6 +783,45 @@
               }
             ]
           }
+        },
+        {
+          "name": "usdc_mint",
+          "address": "4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU"
+        },
+        {
+          "name": "vault_usdc_ata",
+          "writable": true
+        },
+        {
+          "name": "mock_kamino_pool",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  109,
+                  111,
+                  99,
+                  107,
+                  45,
+                  107,
+                  97,
+                  109,
+                  105,
+                  110,
+                  111
+                ]
+              }
+            ]
+          }
+        },
+        {
+          "name": "mock_kamino_usdc_ata",
+          "writable": true
+        },
+        {
+          "name": "token_program"
         },
         {
           "name": "system_program",
@@ -903,6 +1098,19 @@
       ]
     },
     {
+      "name": "MockKaminoPool",
+      "discriminator": [
+        250,
+        94,
+        158,
+        73,
+        123,
+        182,
+        198,
+        147
+      ]
+    },
+    {
       "name": "UserVault",
       "discriminator": [
         23,
@@ -1031,6 +1239,11 @@
       "code": 6022,
       "name": "NotImplemented",
       "msg": "Instruction not yet implemented (Phase 4)"
+    },
+    {
+      "code": 6023,
+      "name": "MockKaminoNotInitialized",
+      "msg": "Mock Kamino pool not initialized"
     }
   ],
   "types": [
@@ -1195,6 +1408,22 @@
           },
           {
             "name": "Defaulted"
+          }
+        ]
+      }
+    },
+    {
+      "name": "MockKaminoPool",
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "bump",
+            "type": "u8"
+          },
+          {
+            "name": "total_shares",
+            "type": "u64"
           }
         ]
       }

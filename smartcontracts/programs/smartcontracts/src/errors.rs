@@ -55,4 +55,6 @@ pub enum AvereError {
     InvalidHybridSplit,
     #[msg("Instruction not yet implemented (Phase 4)")]
     NotImplemented,
+    #[msg("Mock Kamino pool not initialized")]
+    MockKaminoNotInitialized,
 }

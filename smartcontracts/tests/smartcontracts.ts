@@ -27,15 +27,17 @@ import {
   createAssociatedTokenAccountIdempotent,
   mintTo,
   getAccount,
+  getAssociatedTokenAddressSync,
 } from "@solana/spl-token";
 import { assert } from "chai";
 import * as fs from "fs";
 import * as path from "path";
 
 // ─── Seed constants — must match constants.rs exactly ───────────────────────
-const SEED_VAULT     = Buffer.from("vault");
-const SEED_LOAN_TRAD = Buffer.from("loan-t");
-const SEED_BANK_POOL = Buffer.from("bank-pool");
+const SEED_VAULT       = Buffer.from("vault");
+const SEED_LOAN_TRAD   = Buffer.from("loan-t");
+const SEED_BANK_POOL   = Buffer.from("bank-pool");
+const SEED_MOCK_KAMINO = Buffer.from("mock-kamino");
 
 // ─── Business-rule constants — must match constants.rs ───────────────────────
 const MIN_LOAN_USDC    = new BN(1_000_000);
@@ -64,6 +66,10 @@ function deriveLoanTradPDA(
 
 function deriveBankPoolPDA(programId: PublicKey): [PublicKey, number] {
   return PublicKey.findProgramAddressSync([SEED_BANK_POOL], programId);
+}
+
+function deriveMockKaminoPDA(programId: PublicKey): [PublicKey, number] {
+  return PublicKey.findProgramAddressSync([SEED_MOCK_KAMINO], programId);
 }
 
 // ─── Test utilities ──────────────────────────────────────────────────────────
@@ -133,11 +139,13 @@ describe("avere", () => {
   const conn    = provider.connection;
 
   // Shared — created once in `before`
-  let usdcMint:        PublicKey;
-  let mintAuthority:   Keypair;
-  let oracleKeypair:   Keypair;
-  let bankPoolPDA:     PublicKey;
-  let bankPoolUsdcAta: PublicKey;
+  let usdcMint:           PublicKey;
+  let mintAuthority:      Keypair;
+  let oracleKeypair:      Keypair;
+  let bankPoolPDA:        PublicKey;
+  let bankPoolUsdcAta:    PublicKey;
+  let mockKaminoPDA:      PublicKey;
+  let mockKaminoUsdcAta:  PublicKey;
 
   // Recreated per test in `beforeEach`
   let user:     Keypair;
@@ -190,6 +198,23 @@ describe("avere", () => {
 
     // Create BankPool USDC ATA (authority = bankPoolPDA — off-curve)
     bankPoolUsdcAta = await createPdaAta(conn, mintAuthority, usdcMint, bankPoolPDA);
+
+    // Initialize the MockKamino pool (devnet stand-in for Kamino's real reserve)
+    [mockKaminoPDA] = deriveMockKaminoPDA(program.programId);
+    try {
+      await program.methods
+        .initializeMockKamino()
+        .accounts({
+          authority:               provider.wallet.publicKey,
+          usdcMint,
+          tokenProgram:            TOKEN_PROGRAM_ID,
+          associatedTokenProgram:  ASSOCIATED_TOKEN_PROGRAM_ID,
+        } as any)
+        .rpc();
+    } catch (e: any) {
+      if (!e?.message?.includes("already in use") && !e?.message?.includes("0x0")) throw e;
+    }
+    mockKaminoUsdcAta = getAssociatedTokenAddressSync(usdcMint, mockKaminoPDA, true);
   });
 
   // ─── Per-test setup ──────────────────────────────────────────────────────
@@ -1171,28 +1196,167 @@ describe("avere", () => {
   // ═══════════════════════════════════════════════════════════════════════════
 
   describe("rebalance_yield", () => {
+    // Helper: deposit a fixed amount and run rebalance with the given tier.
+    async function depositAndRebalance(opts: {
+      depositLamports: BN;
+      score?: number;
+    }): Promise<{
+      userUsdcAta:  PublicKey;
+      vaultUsdcAta: PublicKey;
+    }> {
+      const { userUsdcAta, vaultUsdcAta } = await setupUsdcAccounts(10_000_000_000);
+      await program.methods
+        .depositUsdc(opts.depositLamports)
+        .accounts({ owner: user.publicKey, usdcMint, userUsdcAta, vaultUsdcAta, tokenProgram: TOKEN_PROGRAM_ID } as any)
+        .signers([user])
+        .rpc();
+      if (opts.score !== undefined) await setScore(opts.score);
+
+      await program.methods
+        .rebalanceYield()
+        .accounts({
+          owner: user.publicKey,
+          usdcMint,
+          vaultUsdcAta,
+          mockKaminoUsdcAta,
+          tokenProgram: TOKEN_PROGRAM_ID,
+        } as any)
+        .signers([user])
+        .rpc();
+
+      return { userUsdcAta, vaultUsdcAta };
+    }
+
     beforeEach(async () => {
       await initVault();
     });
 
-    it("stub: instruction is callable and returns success on localnet", async () => {
-      // handler is a no-op stub until Kamino CPI is wired; it must not revert
-      await program.methods
-        .rebalanceYield()
-        .accounts({ owner: user.publicKey })
-        .signers([user])
-        .rpc();
+    it("Tier D vault — split is 0%; no USDC moves", async () => {
+      const deposit = new BN(1_000_000_000);
+      const before = (await getAccount(conn, mockKaminoUsdcAta)).amount;
+      const { vaultUsdcAta } = await depositAndRebalance({ depositLamports: deposit });
+
+      const vault = await program.account.userVault.fetch(vaultPDA);
+      const after = (await getAccount(conn, mockKaminoUsdcAta)).amount;
+      const vaultAtaAfter = (await getAccount(conn, vaultUsdcAta)).amount;
+
+      assert.ok(new BN(vault.kaminoShares).isZero(), "Tier D must keep kamino_shares at 0");
+      assert.equal(after, before, "MockKamino ATA balance unchanged for Tier D");
+      assert.equal(vaultAtaAfter, BigInt(deposit.toString()), "vault ATA still holds full deposit");
     });
 
-    it("rejects call from a non-owner signer", async () => {
+    it("Tier A vault — moves 70% of free USDC into MockKamino", async () => {
+      const deposit = new BN(1_000_000_000); // 1000 USDC
+      const before = (await getAccount(conn, mockKaminoUsdcAta)).amount;
+      const { vaultUsdcAta } = await depositAndRebalance({ depositLamports: deposit, score: 850 });
+
+      const vault = await program.account.userVault.fetch(vaultPDA);
+      const expected = deposit.muln(7000).divn(10000);
+
+      assert.ok(
+        new BN(vault.kaminoShares).eq(expected),
+        `kamino_shares must equal 70% of deposit (got ${vault.kaminoShares.toString()})`
+      );
+
+      const poolAfter  = (await getAccount(conn, mockKaminoUsdcAta)).amount;
+      const vaultAfter = (await getAccount(conn, vaultUsdcAta)).amount;
+      assert.equal(
+        poolAfter - before,
+        BigInt(expected.toString()),
+        "MockKamino ATA must receive exactly the rebalanced delta"
+      );
+      assert.equal(
+        vaultAfter,
+        BigInt(deposit.sub(expected).toString()),
+        "vault ATA holds the un-rebalanced remainder"
+      );
+    });
+
+    it("Tier B vault — moves 50% of free USDC", async () => {
+      const deposit = new BN(2_000_000_000);
+      const before = (await getAccount(conn, mockKaminoUsdcAta)).amount;
+      await depositAndRebalance({ depositLamports: deposit, score: 700 });
+
+      const vault = await program.account.userVault.fetch(vaultPDA);
+      const expected = deposit.muln(5000).divn(10000);
+      assert.ok(new BN(vault.kaminoShares).eq(expected), "Tier B = 50% split");
+
+      const poolAfter = (await getAccount(conn, mockKaminoUsdcAta)).amount;
+      assert.equal(poolAfter - before, BigInt(expected.toString()));
+    });
+
+    it("Tier C vault — moves 35% of free USDC", async () => {
+      const deposit = new BN(1_000_000_000);
+      await depositAndRebalance({ depositLamports: deposit, score: 500 });
+      const vault = await program.account.userVault.fetch(vaultPDA);
+      const expected = deposit.muln(3500).divn(10000);
+      assert.ok(new BN(vault.kaminoShares).eq(expected), "Tier C = 35% split");
+    });
+
+    it("idempotent: second rebalance on the same vault is a no-op", async () => {
+      const deposit = new BN(1_000_000_000);
+      const { vaultUsdcAta } = await depositAndRebalance({ depositLamports: deposit, score: 850 });
+
+      const sharesAfter1 = (await program.account.userVault.fetch(vaultPDA)).kaminoShares;
+      const poolAfter1   = (await getAccount(conn, mockKaminoUsdcAta)).amount;
+
+      await program.methods
+        .rebalanceYield()
+        .accounts({
+          owner: user.publicKey,
+          usdcMint,
+          vaultUsdcAta,
+          mockKaminoUsdcAta,
+          tokenProgram: TOKEN_PROGRAM_ID,
+        } as any)
+        .signers([user])
+        .rpc();
+
+      const sharesAfter2 = (await program.account.userVault.fetch(vaultPDA)).kaminoShares;
+      const poolAfter2   = (await getAccount(conn, mockKaminoUsdcAta)).amount;
+      assert.equal(sharesAfter1.toString(), sharesAfter2.toString(), "kamino_shares unchanged");
+      assert.equal(poolAfter1, poolAfter2, "pool ATA unchanged");
+    });
+
+    it("rebalances downward: redeems from MockKamino when target shrinks (tier downgrade)", async () => {
+      const deposit = new BN(1_000_000_000);
+      const { vaultUsdcAta } = await depositAndRebalance({ depositLamports: deposit, score: 850 }); // Tier A → 70%
+
+      const sharesBefore = (await program.account.userVault.fetch(vaultPDA)).kaminoShares;
+      assert.ok(new BN(sharesBefore).eq(deposit.muln(7000).divn(10000)));
+
+      // Downgrade to Tier C (35%) and rebalance — should redeem the delta.
+      await setScore(500);
+      await program.methods
+        .rebalanceYield()
+        .accounts({
+          owner: user.publicKey,
+          usdcMint,
+          vaultUsdcAta,
+          mockKaminoUsdcAta,
+          tokenProgram: TOKEN_PROGRAM_ID,
+        } as any)
+        .signers([user])
+        .rpc();
+
+      const vault = await program.account.userVault.fetch(vaultPDA);
+      const expected = deposit.muln(3500).divn(10000);
+      assert.ok(new BN(vault.kaminoShares).eq(expected), "kamino_shares must drop to 35%");
+    });
+
+    it("rejects a non-owner signer", async () => {
       const attacker = Keypair.generate();
       await airdrop(conn, attacker.publicKey);
 
       try {
-        // attacker's vault PDA doesn't exist → expect account-not-found or Unauthorized
         await program.methods
           .rebalanceYield()
-          .accounts({ owner: attacker.publicKey })
+          .accounts({
+            owner: attacker.publicKey,
+            usdcMint,
+            mockKaminoUsdcAta,
+            tokenProgram: TOKEN_PROGRAM_ID,
+          } as any)
           .signers([attacker])
           .rpc();
         assert.fail("expected error for non-owner signer");
@@ -1200,10 +1364,6 @@ describe("avere", () => {
         assert.ok(err);
       }
     });
-
-    it.skip("@devnet-only: deposits free USDC into Kamino and increases kamino_shares", () => {});
-    it.skip("@devnet-only: never sends usdc_locked to Kamino", () => {});
-    it.skip("@devnet-only: uses the correct Kamino split % for the vault's tier", () => {});
   });
 
   // ═══════════════════════════════════════════════════════════════════════════

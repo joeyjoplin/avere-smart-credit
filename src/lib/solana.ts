@@ -41,9 +41,10 @@ export function fromUsdc(units: BN | bigint | number): number {
 }
 
 // ── Seeds (must match constants.rs) ───────────────────────────────────────────
-export const SEED_VAULT     = Buffer.from("vault");
-export const SEED_LOAN_TRAD = Buffer.from("loan-t");
-export const SEED_BANK_POOL = Buffer.from("bank-pool");
+export const SEED_VAULT       = Buffer.from("vault");
+export const SEED_LOAN_TRAD   = Buffer.from("loan-t");
+export const SEED_BANK_POOL   = Buffer.from("bank-pool");
+export const SEED_MOCK_KAMINO = Buffer.from("mock-kamino");
 
 // ── PDA helpers ───────────────────────────────────────────────────────────────
 
@@ -82,6 +83,16 @@ export function ownerUsdcAta(owner: PublicKey): PublicKey {
 export function bankPoolUsdcAta(): PublicKey {
   const [bankPoolPDA] = deriveBankPoolPDA();
   return getAssociatedTokenAddressSync(USDC_MINT, bankPoolPDA, true);
+}
+
+export function deriveMockKaminoPDA(): [PublicKey, number] {
+  return PublicKey.findProgramAddressSync([SEED_MOCK_KAMINO], PROGRAM_ID);
+}
+
+/** ATA for the mock-Kamino pool PDA to hold USDC (devnet stand-in). */
+export function mockKaminoUsdcAta(): PublicKey {
+  const [pda] = deriveMockKaminoPDA();
+  return getAssociatedTokenAddressSync(USDC_MINT, pda, true);
 }
 
 // ── Program factory ────────────────────────────────────────────────────────────

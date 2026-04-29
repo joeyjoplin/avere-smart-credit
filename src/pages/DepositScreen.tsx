@@ -43,6 +43,8 @@ import {
   connection,
   deriveVaultPDA,
   deriveBankPoolPDA,
+  vaultUsdcAta,
+  mockKaminoUsdcAta,
   USDC_MINT,
   toUsdc,
   TOKEN_PROGRAM_ID as TPK,
@@ -232,7 +234,15 @@ export default function DepositScreen() {
 
       // Phase 2: Activating yield
       setPhase(2);
-      const rebalanceTx = await program.methods.rebalanceYield().accounts({}).transaction();
+      const rebalanceTx = await program.methods
+        .rebalanceYield()
+        .accounts({
+          usdcMint:           USDC_MINT,
+          vaultUsdcAta:       vaultUsdcAta(vaultPDA),
+          mockKaminoUsdcAta:  mockKaminoUsdcAta(),
+          tokenProgram:       TPK,
+        })
+        .transaction();
       const rebalanceSig = await sendTransaction(rebalanceTx, connection);
       await connection.confirmTransaction(rebalanceSig, "confirmed");
 

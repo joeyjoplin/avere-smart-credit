@@ -1,8 +1,9 @@
 // PDA seeds
-pub const SEED_VAULT:     &[u8] = b"vault";
-pub const SEED_LOAN_TRAD: &[u8] = b"loan-t";
-pub const SEED_LOAN_DEFI: &[u8] = b"loan-d";
-pub const SEED_BANK_POOL: &[u8] = b"bank-pool";
+pub const SEED_VAULT:        &[u8] = b"vault";
+pub const SEED_LOAN_TRAD:    &[u8] = b"loan-t";
+pub const SEED_LOAN_DEFI:    &[u8] = b"loan-d";
+pub const SEED_BANK_POOL:    &[u8] = b"bank-pool";
+pub const SEED_MOCK_KAMINO:  &[u8] = b"mock-kamino"; // MOCK_KAMINO_FOR_DEVNET
 
 // Business rules
 pub const MAX_ACTIVE_LOANS:    u8  = 3;

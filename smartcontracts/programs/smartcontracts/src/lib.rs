@@ -18,6 +18,10 @@ pub mod smartcontracts {
         instructions::initialize_bank_pool::handler(ctx)
     }
 
+    pub fn initialize_mock_kamino(ctx: Context<InitializeMockKamino>) -> Result<()> {
+        instructions::initialize_mock_kamino::handler(ctx)
+    }
+
     pub fn initialize_vault(ctx: Context<InitializeVault>) -> Result<()> {
         instructions::initialize_vault::handler(ctx)
     }

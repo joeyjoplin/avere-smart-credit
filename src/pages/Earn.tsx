@@ -18,6 +18,8 @@ import { fetchOraclePubkey, requestOracleSignature, fetchScore } from "@/lib/sco
 import {
   connection,
   deriveVaultPDA,
+  vaultUsdcAta,
+  mockKaminoUsdcAta,
   USDC_MINT,
   toUsdc,
   TOKEN_PROGRAM_ID as TPK,
@@ -112,7 +114,12 @@ const Earn = () => {
       // rebalance_yield
       const rebalanceTx = await program.methods
         .rebalanceYield()
-        .accounts({})
+        .accounts({
+          usdcMint:           USDC_MINT,
+          vaultUsdcAta:       vaultUsdcAta(vaultPDA),
+          mockKaminoUsdcAta:  mockKaminoUsdcAta(),
+          tokenProgram:       TPK,
+        })
         .transaction();
       const rebalanceSig = await sendTransaction(rebalanceTx, connection);
       await connection.confirmTransaction(rebalanceSig, "confirmed");

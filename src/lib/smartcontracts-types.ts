@@ -263,8 +263,9 @@ export type Smartcontracts = {
         {
           "name": "usdcMint",
           "docs": [
-            "USDC mint — required for transfer_checked"
-          ]
+            "USDC mint — validated against the known Circle devnet USDC address"
+          ],
+          "address": "4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU"
         },
         {
           "name": "userUsdcAta",
@@ -365,13 +366,14 @@ export type Smartcontracts = {
         {
           "name": "usdcMint",
           "docs": [
-            "USDC mint — required for transfer_checked"
-          ]
+            "USDC mint — validated against the known Circle devnet USDC address"
+          ],
+          "address": "4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU"
         },
         {
           "name": "bankPoolUsdcAta",
           "docs": [
-            "BankPool's USDC ATA (source of funds)"
+            "BankPool's USDC ATA (source of funds) — authority + mint constrained to prevent substitution"
           ],
           "writable": true
         },
@@ -427,6 +429,162 @@ export type Smartcontracts = {
               }
             ]
           }
+        },
+        {
+          "name": "systemProgram",
+          "address": "11111111111111111111111111111111"
+        }
+      ],
+      "args": []
+    },
+    {
+      "name": "initializeMockKamino",
+      "discriminator": [
+        94,
+        66,
+        63,
+        203,
+        136,
+        101,
+        239,
+        98
+      ],
+      "accounts": [
+        {
+          "name": "authority",
+          "writable": true,
+          "signer": true
+        },
+        {
+          "name": "mockKaminoPool",
+          "docs": [
+            "PDA that owns the mock Kamino USDC holding ATA."
+          ],
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  109,
+                  111,
+                  99,
+                  107,
+                  45,
+                  107,
+                  97,
+                  109,
+                  105,
+                  110,
+                  111
+                ]
+              }
+            ]
+          }
+        },
+        {
+          "name": "usdcMint",
+          "address": "4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU"
+        },
+        {
+          "name": "mockKaminoUsdcAta",
+          "docs": [
+            "USDC pool ATA owned by the mock_kamino_pool PDA."
+          ],
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "account",
+                "path": "mockKaminoPool"
+              },
+              {
+                "kind": "const",
+                "value": [
+                  6,
+                  221,
+                  246,
+                  225,
+                  215,
+                  101,
+                  161,
+                  147,
+                  217,
+                  203,
+                  225,
+                  70,
+                  206,
+                  235,
+                  121,
+                  172,
+                  28,
+                  180,
+                  133,
+                  237,
+                  95,
+                  91,
+                  55,
+                  145,
+                  58,
+                  140,
+                  245,
+                  133,
+                  126,
+                  255,
+                  0,
+                  169
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "usdcMint"
+              }
+            ],
+            "program": {
+              "kind": "const",
+              "value": [
+                140,
+                151,
+                37,
+                143,
+                78,
+                36,
+                137,
+                241,
+                187,
+                61,
+                16,
+                41,
+                20,
+                142,
+                13,
+                131,
+                11,
+                90,
+                19,
+                153,
+                218,
+                255,
+                16,
+                132,
+                4,
+                142,
+                123,
+                216,
+                219,
+                233,
+                248,
+                89
+              ]
+            }
+          }
+        },
+        {
+          "name": "tokenProgram"
+        },
+        {
+          "name": "associatedTokenProgram",
+          "address": "ATokenGPvbdGVxr1b2hvZbsiqW5xWH25efTNsLJA8knL"
         },
         {
           "name": "systemProgram",
@@ -633,6 +791,45 @@ export type Smartcontracts = {
           }
         },
         {
+          "name": "usdcMint",
+          "address": "4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU"
+        },
+        {
+          "name": "vaultUsdcAta",
+          "writable": true
+        },
+        {
+          "name": "mockKaminoPool",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  109,
+                  111,
+                  99,
+                  107,
+                  45,
+                  107,
+                  97,
+                  109,
+                  105,
+                  110,
+                  111
+                ]
+              }
+            ]
+          }
+        },
+        {
+          "name": "mockKaminoUsdcAta",
+          "writable": true
+        },
+        {
+          "name": "tokenProgram"
+        },
+        {
           "name": "systemProgram",
           "address": "11111111111111111111111111111111"
         }
@@ -662,6 +859,7 @@ export type Smartcontracts = {
         },
         {
           "name": "vault",
+          "writable": true,
           "pda": {
             "seeds": [
               {
@@ -689,10 +887,33 @@ export type Smartcontracts = {
           "writable": true
         },
         {
+          "name": "bankPool",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  98,
+                  97,
+                  110,
+                  107,
+                  45,
+                  112,
+                  111,
+                  111,
+                  108
+                ]
+              }
+            ]
+          }
+        },
+        {
           "name": "usdcMint",
           "docs": [
-            "USDC mint — required for transfer_checked"
-          ]
+            "USDC mint — validated against the known Circle devnet USDC address"
+          ],
+          "address": "4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU"
         },
         {
           "name": "userUsdcAta",
@@ -704,7 +925,7 @@ export type Smartcontracts = {
         {
           "name": "bankPoolUsdcAta",
           "docs": [
-            "BankPool USDC ATA (destination)"
+            "BankPool USDC ATA (destination) — authority + mint constrained to prevent redirection"
           ],
           "writable": true
         },
@@ -739,6 +960,14 @@ export type Smartcontracts = {
           "relations": [
             "vault"
           ]
+        },
+        {
+          "name": "scoreAuthority",
+          "docs": [
+            "Score engine oracle — must be signed by the program's oracle keypair.",
+            "Constraint disabled in localnet builds so tests can use any signer."
+          ],
+          "signer": true
         },
         {
           "name": "vault",
@@ -814,6 +1043,27 @@ export type Smartcontracts = {
           }
         },
         {
+          "name": "usdcMint",
+          "address": "4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU"
+        },
+        {
+          "name": "vaultUsdcAta",
+          "docs": [
+            "Vault's USDC token account (source — authority is vault PDA)"
+          ],
+          "writable": true
+        },
+        {
+          "name": "userUsdcAta",
+          "docs": [
+            "User's USDC token account (destination)"
+          ],
+          "writable": true
+        },
+        {
+          "name": "tokenProgram"
+        },
+        {
           "name": "systemProgram",
           "address": "11111111111111111111111111111111"
         }
@@ -851,6 +1101,19 @@ export type Smartcontracts = {
         224,
         148,
         248
+      ]
+    },
+    {
+      "name": "mockKaminoPool",
+      "discriminator": [
+        250,
+        94,
+        158,
+        73,
+        123,
+        182,
+        198,
+        147
       ]
     },
     {
@@ -896,7 +1159,7 @@ export type Smartcontracts = {
     {
       "code": 6005,
       "name": "loanBelowMinimum",
-      "msg": "Loan amount below minimum ($50 USDC)"
+      "msg": "Loan amount below minimum ($1 USDC)"
     },
     {
       "code": 6006,
@@ -967,6 +1230,26 @@ export type Smartcontracts = {
       "code": 6019,
       "name": "zeroDeposit",
       "msg": "Deposit amount must be greater than zero"
+    },
+    {
+      "code": 6020,
+      "name": "invalidMint",
+      "msg": "Invalid USDC mint — expected Circle devnet USDC"
+    },
+    {
+      "code": 6021,
+      "name": "invalidHybridSplit",
+      "msg": "hybrid_defi_pct + hybrid_trad_pct must equal 100"
+    },
+    {
+      "code": 6022,
+      "name": "notImplemented",
+      "msg": "Instruction not yet implemented (Phase 4)"
+    },
+    {
+      "code": 6023,
+      "name": "mockKaminoNotInitialized",
+      "msg": "Mock Kamino pool not initialized"
     }
   ],
   "types": [
@@ -1131,6 +1414,22 @@ export type Smartcontracts = {
           },
           {
             "name": "defaulted"
+          }
+        ]
+      }
+    },
+    {
+      "name": "mockKaminoPool",
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "bump",
+            "type": "u8"
+          },
+          {
+            "name": "totalShares",
+            "type": "u64"
           }
         ]
       }

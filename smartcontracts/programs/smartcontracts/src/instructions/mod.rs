@@ -1,5 +1,6 @@
 pub mod approve_traditional_loan;
 pub mod initialize_bank_pool;
+pub mod initialize_mock_kamino;
 pub mod close_loan;
 pub mod deposit_sol;
 pub mod deposit_usdc;
@@ -14,6 +15,7 @@ pub mod withdraw;
 
 pub use approve_traditional_loan::*;
 pub use initialize_bank_pool::*;
+pub use initialize_mock_kamino::*;
 pub use close_loan::*;
 pub use deposit_sol::*;
 pub use deposit_usdc::*;
