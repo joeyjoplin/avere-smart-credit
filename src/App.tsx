@@ -16,6 +16,7 @@ import DepositScreen from "./pages/DepositScreen";
 import Onboarding from "./pages/Onboarding";
 import Connect from "./pages/Connect";
 import LenderDemo from "./pages/LenderDemo";
+import DemoWallets from "./pages/DemoWallets";
 import NotFound from "./pages/NotFound";
 
 const queryClient = new QueryClient();
@@ -47,6 +48,8 @@ const App = () => (
             <Route path="/connect" element={<RequireWallet><Connect /></RequireWallet>} />
             {/* Public — Score-as-a-Service demo (Layer 2). No wallet gate; simulates a third-party lender. */}
             <Route path="/lender-demo" element={<LenderDemo />} />
+            {/* Public — pre-funded devnet wallets for hackathon judges (no faucet treasure hunt). */}
+            <Route path="/demo-wallets" element={<DemoWallets />} />
             {/* ADD ALL CUSTOM ROUTES ABOVE THE CATCH-ALL "*" ROUTE */}
             <Route path="*" element={<NotFound />} />
           </Routes>

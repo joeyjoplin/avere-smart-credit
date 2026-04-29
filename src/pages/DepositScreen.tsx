@@ -9,8 +9,6 @@ import {
   Circle,
   Building2,
   Copy,
-  ChevronLeft,
-  ChevronRight,
   ExternalLink,
   Sparkles,
   X,
@@ -31,7 +29,6 @@ import { Button } from "@/components/ui/button";
 import { toast } from "@/hooks/use-toast";
 import { useProgram } from "@/hooks/useProgram";
 import { useVault } from "@/hooks/useVault";
-import { useScore } from "@/hooks/useScore";
 import { usePlaidToken } from "@/hooks/usePlaidToken";
 import {
   fetchScore,
@@ -70,7 +67,6 @@ export default function DepositScreen() {
   const { publicKey, sendTransaction } = useWallet();
   const program = useProgram();
   const { data: vault, refetch: refetchVault } = useVault();
-  const { data: scoreData } = useScore();
   const walletStr = publicKey?.toBase58() ?? null;
   const { token: plaidToken, setToken: setPlaidToken } = usePlaidToken(walletStr);
   const queryClient = useQueryClient();
@@ -83,8 +79,9 @@ export default function DepositScreen() {
   const [plaidLinkToken, setPlaidLinkToken] = useState<string | null>(null);
   const [fetchingLinkToken, setFetchingLinkToken] = useState(false);
 
-  // Faucet tutorial carousel — visible when wallet has no USDC
-  const [tutorialSlide, setTutorialSlide] = useState(0);
+  // Demo-wallet shortcut — visible when wallet has no USDC.
+  // Replaces the old SOL/USDC faucet treasure hunt with a single CTA pointing
+  // at /demo-wallets (5 pre-funded keypairs ready for Phantom import).
   const tutorialDismissKey = walletStr ? `avere_tutorial_dismissed_${walletStr}` : null;
   const [tutorialDismissed, setTutorialDismissed] = useState(() => {
     if (!tutorialDismissKey) return false;
@@ -347,7 +344,10 @@ export default function DepositScreen() {
           </motion.div>
         )}
 
-        {/* Faucet tutorial carousel — visible when wallet has no USDC */}
+        {/* Demo-wallet shortcut — visible when wallet has no USDC.
+            Replaces the old SOL/USDC faucet treasure hunt with a single CTA
+            pointing at /demo-wallets, where 5 pre-funded keypairs are listed
+            with copy-private-key buttons for one-shot Phantom import. */}
         <AnimatePresence>
           {showTutorial && walletStr && (
             <motion.div
@@ -359,129 +359,44 @@ export default function DepositScreen() {
             >
               <div className="mb-3 flex items-center justify-between">
                 <p className="text-xs font-semibold uppercase tracking-wide text-accent">
-                  Step {tutorialSlide + 1} of 3 · Get test funds
+                  No test funds yet?
                 </p>
                 <button
                   onClick={dismissTutorial}
                   className="text-muted-foreground hover:text-foreground"
-                  aria-label="Dismiss tutorial"
+                  aria-label="Dismiss"
                 >
                   <X className="h-4 w-4" />
                 </button>
               </div>
 
-              <AnimatePresence mode="wait">
-                {tutorialSlide === 0 && (
-                  <motion.div
-                    key="slide-0"
-                    initial={{ opacity: 0, x: 12 }}
-                    animate={{ opacity: 1, x: 0 }}
-                    exit={{ opacity: 0, x: -12 }}
-                    transition={{ duration: 0.18 }}
-                  >
-                    <h3 className="text-base font-semibold text-foreground">Copy your wallet address</h3>
-                    <p className="mt-1 text-sm text-muted-foreground">
-                      You'll paste this into the faucets in the next steps.
-                    </p>
-                    <div className="mt-3 flex items-center gap-2 rounded-xl bg-background p-2.5">
-                      <code className="flex-1 truncate font-mono text-xs text-foreground">{walletStr}</code>
-                      <button
-                        onClick={copyAddress}
-                        className="flex items-center gap-1 rounded-lg bg-accent px-3 py-1.5 text-xs font-semibold text-accent-foreground hover:bg-accent/90"
-                      >
-                        <Copy className="h-3.5 w-3.5" />
-                        Copy
-                      </button>
-                    </div>
-                  </motion.div>
-                )}
+              <h3 className="text-base font-semibold text-foreground">Use a pre-funded demo wallet</h3>
+              <p className="mt-1 text-sm text-muted-foreground">
+                Skip the faucets. We have 5 pre-funded devnet wallets ready —
+                import one into Phantom and connect to Avere in 30 seconds.
+              </p>
 
-                {tutorialSlide === 1 && (
-                  <motion.div
-                    key="slide-1"
-                    initial={{ opacity: 0, x: 12 }}
-                    animate={{ opacity: 1, x: 0 }}
-                    exit={{ opacity: 0, x: -12 }}
-                    transition={{ duration: 0.18 }}
-                  >
-                    <h3 className="text-base font-semibold text-foreground">Get devnet SOL</h3>
-                    <p className="mt-1 text-sm text-muted-foreground">
-                      SOL pays the tiny network fees. Paste your address, request 1 SOL.
-                    </p>
-                    <a
-                      href="https://faucet.solana.com"
-                      target="_blank"
-                      rel="noreferrer"
-                      className="mt-3 flex items-center justify-between rounded-xl bg-background p-3 transition-colors hover:bg-background/70"
-                    >
-                      <span className="font-mono text-sm text-foreground">faucet.solana.com</span>
-                      <ExternalLink className="h-4 w-4 text-muted-foreground" />
-                    </a>
-                    <p className="mt-2 text-xs text-muted-foreground">
-                      Backup: <a href="https://faucet.quicknode.com/solana/devnet" target="_blank" rel="noreferrer" className="underline">faucet.quicknode.com</a>
-                    </p>
-                  </motion.div>
-                )}
+              <a
+                href="/demo-wallets"
+                className="mt-3 flex w-full items-center justify-between rounded-xl bg-accent px-4 py-3 font-semibold text-accent-foreground transition-colors hover:bg-accent/90"
+              >
+                <span className="flex items-center gap-2">
+                  <Sparkles className="h-4 w-4" />
+                  Browse demo wallets
+                </span>
+                <ExternalLink className="h-4 w-4" />
+              </a>
 
-                {tutorialSlide === 2 && (
-                  <motion.div
-                    key="slide-2"
-                    initial={{ opacity: 0, x: 12 }}
-                    animate={{ opacity: 1, x: 0 }}
-                    exit={{ opacity: 0, x: -12 }}
-                    transition={{ duration: 0.18 }}
-                  >
-                    <h3 className="text-base font-semibold text-foreground">Get devnet USDC</h3>
-                    <p className="mt-1 text-sm text-muted-foreground">
-                      Circle's official faucet. Pick Solana Devnet, paste your address, request 10 USDC.
-                    </p>
-                    <a
-                      href="https://faucet.circle.com"
-                      target="_blank"
-                      rel="noreferrer"
-                      className="mt-3 flex items-center justify-between rounded-xl bg-background p-3 transition-colors hover:bg-background/70"
-                    >
-                      <span className="font-mono text-sm text-foreground">faucet.circle.com</span>
-                      <ExternalLink className="h-4 w-4 text-muted-foreground" />
-                    </a>
-                    <p className="mt-2 text-xs text-muted-foreground">
-                      Once it lands, refresh and the Deposit button will enable.
-                    </p>
-                  </motion.div>
-                )}
-              </AnimatePresence>
-
-              {/* Carousel controls */}
-              <div className="mt-4 flex items-center justify-between">
-                <button
-                  onClick={() => setTutorialSlide((s) => Math.max(0, s - 1))}
-                  disabled={tutorialSlide === 0}
-                  className="flex items-center gap-1 text-xs font-medium text-muted-foreground transition-colors hover:text-foreground disabled:opacity-30"
-                >
-                  <ChevronLeft className="h-4 w-4" />
-                  Back
-                </button>
-                <div className="flex gap-1.5">
-                  {[0, 1, 2].map((i) => (
-                    <button
-                      key={i}
-                      onClick={() => setTutorialSlide(i)}
-                      className={`h-1.5 w-6 rounded-full transition-colors ${
-                        i === tutorialSlide ? "bg-accent" : "bg-accent/20"
-                      }`}
-                      aria-label={`Go to step ${i + 1}`}
-                    />
-                  ))}
+              <details className="mt-3">
+                <summary className="cursor-pointer text-xs text-muted-foreground hover:text-foreground">
+                  Have your own wallet? Top up via public faucets.
+                </summary>
+                <div className="mt-2 space-y-1.5 rounded-lg bg-background/50 p-3 text-xs text-muted-foreground">
+                  <p>Your address: <code className="font-mono text-foreground">{walletStr.slice(0, 8)}…{walletStr.slice(-6)}</code> <button onClick={copyAddress} className="ml-1 underline hover:text-foreground"><Copy className="inline h-3 w-3" /> copy</button></p>
+                  <p>SOL: <a href="https://faucet.solana.com" target="_blank" rel="noreferrer" className="underline hover:text-foreground">faucet.solana.com</a></p>
+                  <p>USDC: <a href="https://faucet.circle.com" target="_blank" rel="noreferrer" className="underline hover:text-foreground">faucet.circle.com</a> (pick Solana Devnet)</p>
                 </div>
-                <button
-                  onClick={() => setTutorialSlide((s) => Math.min(2, s + 1))}
-                  disabled={tutorialSlide === 2}
-                  className="flex items-center gap-1 text-xs font-medium text-muted-foreground transition-colors hover:text-foreground disabled:opacity-30"
-                >
-                  Next
-                  <ChevronRight className="h-4 w-4" />
-                </button>
-              </div>
+              </details>
             </motion.div>
           )}
         </AnimatePresence>

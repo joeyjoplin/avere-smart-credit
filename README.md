@@ -122,7 +122,9 @@ anchor deploy --provider.cluster devnet
 
 ## Demo Wallets
 
-Three wallets are pre-configured with mock profiles in `score_engine/src/profiles/`:
+### Persona profiles (mock score profiles)
+
+Three wallets have hand-crafted persona profiles in `score_engine/src/profiles/`:
 
 | Persona | Wallet | Score | Tier |
 |---|---|---|---|
@@ -131,6 +133,40 @@ Three wallets are pre-configured with mock profiles in `score_engine/src/profile
 | No history | `4qQbMCTknaYS7EwUMM42h2RfQjYRYT7RwtkbvCa3FBRW` | 320 | D |
 
 Any other wallet receives a deterministic score derived from SHA-256 of its address (no external API calls, always Tier A–C).
+
+### Pre-funded devnet wallets (live demo)
+
+Five throwaway devnet wallets are pre-funded with **0.1 SOL + 20 USDC each** so judges and testers can try the full Deposit → Score → Loan → Repay cycle without hitting Solana / Circle faucets.
+
+Public page: [`/demo-wallets`](https://avere-smart-credit.vercel.app/demo-wallets) — lists all five with "Reveal private key" + "Copy" buttons.
+
+| # | Pubkey |
+|---|---|
+| 1 | `7pu2CgQ5sYHj2JYG6qxuuFERA6DgRpQafWBQxJZ5hXze` |
+| 2 | `5b6xLopMLUvnAWqB4CuQ1ZsP8tdY1AHHnU58nh8g37oJ` |
+| 3 | `92zxYBVeogcDpQ88Vmr6VgSnPQJ7C3JADvjXjKZwHiC2` |
+| 4 | `FMqFjuXW4H5Upo9Qvm8wws7i8jJr2unCHNFspTPcf2xt` |
+| 5 | `AQ4yGwojhgtWi78rKGXcmTaREnN3kPv8bNmu5z1AcDBo` |
+
+**Judge demo flow:**
+
+1. Visit [`/demo-wallets`](https://avere-smart-credit.vercel.app/demo-wallets), reveal + copy a private key
+2. [Phantom](https://phantom.app) → **Add / Connect Wallet** → **Import Private Key** → paste
+3. Phantom → Settings → **Developer Settings** → Network → **Devnet**
+4. Open [Avere](https://avere-smart-credit.vercel.app) → Connect → pick **Phantom**
+
+The wallet now has $20 USDC ready for deposit. The Avere wallet adapter surfaces both Turnkey (passkey) and Phantom — judges with Phantom + a demo keypair connect without ever touching a faucet.
+
+**Refilling drained wallets.** Demo wallets are public, so anyone can drain them. The funding script is idempotent — it tops up only what's missing:
+
+```bash
+cd avere-smart-credit/smartcontracts
+yarn ts-node scripts/fund_demo_wallets.ts
+```
+
+Source: USDC comes from `score_engine/faucet-keypair.json` (top up at [faucet.circle.com](https://faucet.circle.com), Solana Devnet). SOL comes from your deployer keypair `~/.config/solana/id.json`. Run it whenever a wallet drops below 5 USDC or 0.05 SOL.
+
+> **Security:** these are throwaway devnet keys committed to the repo. They hold devnet USDC only. **Never** add mainnet keys to `scripts/keypairs/demo-*-keypair.json`.
 
 ---
 

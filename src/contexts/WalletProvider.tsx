@@ -3,28 +3,24 @@ import {
   ConnectionProvider,
   WalletProvider,
 } from "@solana/wallet-adapter-react";
+import type { Adapter } from "@solana/wallet-adapter-base";
+import { PhantomWalletAdapter } from "@solana/wallet-adapter-wallets";
 import { SOLANA_RPC } from "@/lib/solana";
 import { getTurnkeyPasskeyAdapter } from "@/adapters/TurnkeyPasskeyAdapter";
 import { TURNKEY_ORG_ID } from "@/lib/turnkey";
-
-// Fallback to Phantom if Turnkey is not configured
-async function loadFallbackAdapters() {
-  const { PhantomWalletAdapter } = await import("@solana/wallet-adapter-wallets");
-  return [new PhantomWalletAdapter()];
-}
 
 interface Props {
   children: React.ReactNode;
 }
 
 export default function SolanaWalletProvider({ children }: Props) {
+  // Surface Phantom alongside Turnkey so demo judges can import a pre-funded
+  // demo keypair into Phantom and connect — bypasses the faucet treasure hunt.
   const wallets = useMemo(() => {
-    if (!TURNKEY_ORG_ID) {
-      console.warn("[Avere] VITE_TURNKEY_ORG_ID not set — falling back to Phantom");
-      // Return empty; Phantom will be auto-detected via wallet-adapter standard
-      return [];
-    }
-    return [getTurnkeyPasskeyAdapter()];
+    const adapters: Adapter[] = [new PhantomWalletAdapter()];
+    if (TURNKEY_ORG_ID) adapters.unshift(getTurnkeyPasskeyAdapter());
+    else console.warn("[Avere] VITE_TURNKEY_ORG_ID not set — Phantom-only");
+    return adapters;
   }, []);
 
   return (
