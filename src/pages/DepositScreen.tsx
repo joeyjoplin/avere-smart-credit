@@ -34,6 +34,7 @@ import { useVault } from "@/hooks/useVault";
 import { useScore } from "@/hooks/useScore";
 import { usePlaidToken } from "@/hooks/usePlaidToken";
 import {
+  fetchScore,
   fetchOraclePubkey,
   requestOracleSignature,
   fetchPlaidLinkToken,
