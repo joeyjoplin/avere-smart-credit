@@ -189,6 +189,39 @@ FRED_API_KEY=
 
 ---
 
+## Fiat On/Off-Ramp (post-MVP — required for production launch)
+
+Avere targets users who are invisible to traditional credit — gig workers, immigrants, thin-file users. **~95% of that demographic does not hold USDC** and cannot onboard via "deposit USDC". A real production launch requires fiat ramps in every market we serve.
+
+### Hackathon scope vs. production scope
+
+| Surface | Hackathon | Production |
+|---|---|---|
+| Onboarding entry point | Pre-funded devnet wallets at [`/demo-wallets`](https://avere-smart-credit.vercel.app/demo-wallets) | Fiat → USDC via on-ramp partner |
+| Withdrawal | Wallet-to-wallet USDC | USDC → fiat via off-ramp partner |
+| Conversion fees | None (devnet) | 1–5% depending on rail (Pix/SPEI cheapest, card most expensive) |
+| KYC | Sumsub sandbox | Sumsub + on-ramp partner KYC (stacked at launch, single-pass at maturity) |
+
+### Provider strategy
+
+| Phase | Provider | Role | Region | Timeline |
+|---|---|---|---|---|
+| 2a | **Sphere Labs** | Stablecoin-native ACH on/off-ramp, lowest USDC fees | **US — first** | ~6 weeks post-hackathon |
+| 2b | **MoonPay** | Card on-ramp aggregator | Tail markets (UK, SG, UAE, AU, EU under MiCA, etc.) | ~3 months post-hackathon |
+| 2c | **Bitso** | Pix on/off-ramp (BRL ↔ USDC), SPEI on/off-ramp (MXN ↔ USDC) | LATAM (Brazil + Mexico) — **last, gated on regulatory clarity** | 6+ months, regulation-dependent |
+
+**Launch sequence is regulatory-driven, not demand-driven.** The US has the friendliest stablecoin neobank regulation today (post-2025 SAB 121 repeal, GENIUS Act stablecoin framework, clear MTL-via-partner pathways). LATAM has the **largest demand** (BRL/MXN inflation hedge → enormous dollar-saving demand) but Brazil's BCB tightened VASP licensing through 2024–2025 and Mexico's CNBV maintains restrictive Fintech Law constraints. We launch where we can, then expand as licensing pathways open. Pix and SPEI are technically excellent rails — the bottleneck is regulation, not technology.
+
+### Hard rules
+
+1. **Anchor instructions never change for fiat.** USDC settles off-chain via the on-ramp partner, then the existing `deposit_usdc` instruction credits the vault. Two-Layer Principle preserved — user sees "Deposit $50", never "USDC".
+2. **Off-ramp parity.** Every on-ramp shipped must include its off-ramp in the same release. Users who can put money in but can't take it out will not trust the product.
+3. **Avere is never a money transmitter.** The on-ramp partner holds the MTL and bears the regulatory burden. Avere "introduces" users — never custodies fiat.
+
+See [AVERE_BLUEPRINT.md `## Fiat On/Off-Ramp`](AVERE_BLUEPRINT.md) for the full provider matrix, KYC integration patterns, on-chain implications, unit economics, and risk analysis.
+
+---
+
 ## Score-as-a-Service (post-MVP — architecture preview)
 
 Avere is **two products in one codebase**:
