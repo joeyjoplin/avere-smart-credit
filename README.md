@@ -1,5 +1,7 @@
 # Avere — Hybrid Credit for Gig Workers on Solana
 
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
+
 Avere is a neobank MVP built on Solana devnet that gives gig workers (Uber, DoorDash, Upwork, Fiverr) access to credit based on verified income — not a traditional FICO score. It combines a traditional fixed-rate loan tranche with a DeFi collateral tranche into a single blended-rate product, scored by an off-chain credit engine.
 
 Built for the Colosseum Hackathon.
@@ -304,3 +306,9 @@ The `/score/verify` endpoint refuses to mint an attestation without a valid gran
 - ⏳ `/score/verify` endpoint with API key auth + Stripe billing — post-MVP
 
 See [AVERE_BLUEPRINT.md `## Score-as-a-Service`](AVERE_BLUEPRINT.md) for the full spec.
+
+---
+
+## License
+
+[MIT](LICENSE) © 2026 Avere
