@@ -305,7 +305,6 @@ The `/score/verify` endpoint refuses to mint an attestation without a valid gran
 - ⏳ `ScoreShareGrant` Anchor instruction — post-MVP
 - ⏳ `/score/verify` endpoint with API key auth + Stripe billing — post-MVP
 
-See [AVERE_BLUEPRINT.md `## Score-as-a-Service`](AVERE_BLUEPRINT.md) for the full spec.
 
 ---
 
